@@ -39,4 +39,4 @@ jobs:
             . .venv/bin/activate
             pip install -r requirements.txt -r requirements-dev.txt || pip install -r requirements.txt pytest
             pip install -e .
-            echo "${{ secrets.DEPLOY_PASSWORD }}" | sudo -S systemctl restart tradingagents tradingagents-dashboard
+            echo "${{ secrets.DEPLOY_PASSWORD }}" | sudo -S systemctl restart alpaca-mcp tradingagents tradingagents-dashboard
