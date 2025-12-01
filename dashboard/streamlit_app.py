@@ -91,11 +91,14 @@ def render_status():
 
 def render_account(run: Dict[str, Any]):
     st.subheader("Latest Auto-Trade Snapshot")
-    acct = run.get("account_snapshot", {})
+    acct = run.get("account_snapshot", {}) or {}
+    cash = acct.get("cash", run.get("cash", 0))
+    bp = acct.get("buying_power", run.get("buying_power", 0))
+    pv = acct.get("portfolio_value", run.get("portfolio_value", 0))
     cols = st.columns(3)
-    cols[0].metric("Cash", f"${acct.get('cash', 0):,}")
-    cols[1].metric("Buying Power", f"${acct.get('buying_power', 0):,}")
-    cols[2].metric("Portfolio", f"${acct.get('portfolio_value', 0):,}")
+    cols[0].metric("Cash", f"${cash:,}")
+    cols[1].metric("Buying Power", f"${bp:,}")
+    cols[2].metric("Portfolio", f"${pv:,}")
 
 
 def render_decisions(run: Dict[str, Any]):
