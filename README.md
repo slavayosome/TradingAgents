@@ -294,6 +294,8 @@ ssh -L 8501:127.0.0.1:8501 deploy@<server-ip>
 ```
 The dashboard reads JSON artifacts from `TRADINGAGENTS_RESULTS_DIR` and probes MCP health at `http://127.0.0.1:8000/mcp` (override with `TRADINGAGENTS_MCP_URL`).
 If your MCP returns HTTP 400/406 (common for streamable-http when headers differ), the dashboard still treats it as reachable.
+To skip system service checks when running locally (no systemd), set `DASHBOARD_SERVICE_CHECK=false`.
+To check remote services while running locally, set `DASHBOARD_SERVICE_SSH="ssh -i ~/.ssh/<key> deploy@<server-ip>"` so service status uses that SSH command.
 
 ## Contributing
 

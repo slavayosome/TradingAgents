@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ HYP_DIR = RESULTS_DIR / "hypotheses"
 AUTO_RUN_DIR = RESULTS_DIR
 MCP_URL = os.getenv("TRADINGAGENTS_MCP_URL", "http://127.0.0.1:8000/mcp")
 CHECK_SERVICES = os.getenv("DASHBOARD_SERVICE_CHECK", "true").lower() not in ("0", "false", "no")
+SSH_CMD = os.getenv("DASHBOARD_SERVICE_SSH", "").strip()
 
 
 def read_json_files(path: Path, prefix: str) -> List[Dict[str, Any]]:
@@ -54,8 +56,11 @@ def latest_auto_trade() -> Optional[Dict[str, Any]]:
 def service_status(name: str) -> str:
     if not CHECK_SERVICES:
         return "skipped"
+    cmd = ["systemctl", "is-active", name]
+    if SSH_CMD:
+        cmd = shlex.split(SSH_CMD) + cmd
     try:
-        out = subprocess.check_output(["systemctl", "is-active", name], text=True).strip()
+        out = subprocess.check_output(cmd, text=True).strip()
         return out
     except FileNotFoundError:
         return "n/a (no systemd?)"
