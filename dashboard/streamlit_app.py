@@ -209,15 +209,14 @@ def render_status():
     cols[2].metric("Market", status_badge(market_text, market.get("status", "red")))
 
 
-def render_account(run: Dict[str, Any]):
-    st.subheader("Latest Auto-Trade Snapshot")
-    acct = run.get("account_snapshot", {}) or {}
-    # fallback to top-level fields
-    cash = acct.get("cash", run.get("cash", 0))
-    bp = acct.get("buying_power", run.get("buying_power", 0))
-    pv = acct.get("portfolio_value", run.get("portfolio_value", 0))
-    # if still empty, try live from MCP
-    live = mcp_account()
+def render_account(latest_run: Optional[Dict[str, Any]], live: Dict[str, Any]):
+    st.subheader("Account Snapshot")
+    cash = bp = pv = 0.0
+    if latest_run:
+        acct = latest_run.get("account_snapshot", {}) or {}
+        cash = acct.get("cash", latest_run.get("cash", 0))
+        bp = acct.get("buying_power", latest_run.get("buying_power", 0))
+        pv = acct.get("portfolio_value", latest_run.get("portfolio_value", 0))
     if live:
         cash = live.get("cash", cash)
         bp = live.get("buying_power", bp)
@@ -288,12 +287,12 @@ def render_hypotheses(records: List[Dict[str, Any]]):
 def main():
     render_status()
     latest = latest_auto_trade()
+    live_acc = mcp_account()
+    render_account(latest, live_acc)
     if latest:
-        render_account(latest)
         render_decisions(latest)
     else:
         st.info("No auto-trade runs found yet.")
-
     render_hypotheses(load_hypotheses())
 
 
