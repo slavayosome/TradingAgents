@@ -72,9 +72,9 @@ DEFAULT_CONFIG = {
         "timeout_seconds": float(os.getenv("ALPACA_MCP_TIMEOUT_SECONDS", "30")),
         "required_tools": [
             "get_account_info",
-            "get_positions",
+            "get_all_positions",
             "get_orders",
-            "get_market_clock",
+            "get_clock",
         ],
     },
     "trade_execution": {

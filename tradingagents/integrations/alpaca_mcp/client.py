@@ -37,7 +37,7 @@ class AlpacaMCPClient:
         return self._call_tool("get_account_info")
 
     def fetch_positions(self) -> str:
-        return self._call_tool("get_positions")
+        return self._call_tool("get_all_positions")
 
     def fetch_orders(self, limit: int = 25) -> str:
         return self._call_tool("get_orders", {"status": "all", "limit": limit})
@@ -49,7 +49,7 @@ class AlpacaMCPClient:
         return self._call_tool("close_position", payload)
 
     def fetch_market_clock(self) -> str:
-        return self._call_tool("get_market_clock")
+        return self._call_tool("get_clock")
 
     def verify_connection(self) -> bool:
         """Check that the MCP server is reachable and exposes required tools."""

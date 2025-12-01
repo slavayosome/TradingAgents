@@ -72,7 +72,7 @@ class AccountService:
         async def _fetch_all() -> Dict[str, str]:
             async with self.client._acquire_session() as session:  # type: ignore[attr-defined]
                 account_text = await self.client._call_tool_async("get_account_info", {}, session=session)
-                positions_text = await self.client._call_tool_async("get_positions", {}, session=session, validate=False)
+                positions_text = await self.client._call_tool_async("get_all_positions", {}, session=session, validate=False)
                 orders_text = await self.client._call_tool_async("get_orders", {"status": "all", "limit": 50}, session=session, validate=False)
                 return {
                     "account": account_text,
