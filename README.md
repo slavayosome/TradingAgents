@@ -279,6 +279,21 @@ An opinionated CI/CD workflow lives at `.github/workflows/deploy.yml`. Set the f
 
 The workflow installs deps, runs tests, rsyncs the repo (excluding results/.env/.venv), then restarts the `tradingagents` systemd service.
 
+### Dashboard (optional)
+
+Run a local dashboard to view status, latest decisions, and hypotheses:
+```bash
+pip install streamlit  # already in requirements.txt
+TRADINGAGENTS_RESULTS_DIR=./results streamlit run dashboard/streamlit_app.py
+```
+If running on a server, bind to localhost and tunnel:
+```bash
+streamlit run dashboard/streamlit_app.py --server.address 127.0.0.1 --server.port 8501
+# from your laptop:
+ssh -L 8501:127.0.0.1:8501 deploy@<server-ip>
+```
+The dashboard reads JSON artifacts from `TRADINGAGENTS_RESULTS_DIR` and probes MCP health at `http://127.0.0.1:8000/mcp` (override with `TRADINGAGENTS_MCP_URL`).
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
