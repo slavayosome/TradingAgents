@@ -118,6 +118,21 @@ def render_decisions(run: Dict[str, Any]):
         )
     st.dataframe(rows, use_container_width=True)
 
+    st.subheader("Decision Details")
+    for d in decisions:
+        ticker = d.get("ticker") or "?"
+        action = (d.get("final_decision") or d.get("immediate_action") or "hold").upper()
+        with st.expander(f"{ticker} – {action}"):
+            st.write("Strategy:", d.get("strategy"))
+            st.write("Priority:", d.get("priority"))
+            st.write("Trader Plan:", d.get("trader_plan"))
+            st.write("Final Notes:", d.get("final_notes") or "<none>")
+            sp = d.get("sequential_plan") or {}
+            st.write("Plan Actions:", sp.get("actions"))
+            st.write("Plan Next:", sp.get("next_decision"))
+            st.write("Reasoning:", sp.get("reasoning"))
+            st.write("Action Queue:", d.get("action_queue"))
+
 
 def render_hypotheses(records: List[Dict[str, Any]]):
     st.subheader("Hypotheses")
