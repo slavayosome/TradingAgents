@@ -83,9 +83,11 @@ class AccountService:
         try:
             texts = asyncio.run(_fetch_all())
         except AlpacaMCPError as exc:
-            raise RuntimeError(f"Failed to retrieve Alpaca account snapshot: {exc}") from exc
-        except Exception as exc:
-            raise RuntimeError(f"Failed to retrieve Alpaca account snapshot: {exc}") from exc
+            self.logger.exception("Failed to retrieve Alpaca account snapshot from MCP: %s", exc)
+            texts = {"account": "", "positions": "", "orders": ""}
+        except Exception as exc:  # pragma: no cover - defensive
+            self.logger.exception("Failed to retrieve Alpaca account snapshot: %s", exc)
+            texts = {"account": "", "positions": "", "orders": ""}
 
         snapshot = AccountSnapshot(
             fetched_at=datetime.utcnow(),
