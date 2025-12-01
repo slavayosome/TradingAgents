@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Deploy via rsync
-        uses: burnett01/rsync-deployments@v6.0
+        uses: burnett01/rsync-deployments@v5.2
         with:
           switches: -avz --delete --exclude ".git" --exclude ".github" --exclude "results" --exclude "__pycache__" --exclude ".venv"
           path: ./
