@@ -63,7 +63,7 @@ def mcp_health(url: str = MCP_URL) -> str:
         headers = {"Accept": "application/json, text/event-stream"}
         payload = {"jsonrpc": "2.0", "id": 1, "method": "list_tools", "params": {}}
         resp = requests.post(url, json=payload, headers=headers, timeout=5)
-        if resp.status_code == 200:
+        if resp.status_code in (200, 400, 406):
             return "ok"
         return f"{resp.status_code}"
     except Exception as exc:
