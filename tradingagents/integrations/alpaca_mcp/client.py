@@ -96,7 +96,7 @@ class AlpacaMCPClient:
         if not self.config.enabled:
             raise AlpacaMCPError("Alpaca MCP integration is disabled.")
         if ClientSession is None or (
-            self.config.transport == "http" and streamablehttp_client is None
+            self.config.transport in {"http", "streamable-http"} and streamablehttp_client is None
         ):
             raise AlpacaMCPError(
                 "Package 'mcp' is required to use the Alpaca MCP integration. Install it with `pip install mcp`."
@@ -140,7 +140,7 @@ class AlpacaMCPClient:
                 "Package 'mcp' is required to use the Alpaca MCP integration. Install it with `pip install mcp`."
             )
 
-        if self.config.transport == "http":
+        if self.config.transport in {"http", "streamable-http"}:
             if streamablehttp_client is None:
                 raise AlpacaMCPError(
                     "HTTP transport requires the 'mcp' package. Install it with `pip install mcp`."

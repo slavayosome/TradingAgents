@@ -37,7 +37,7 @@ class AlpacaMCPConfig:
     def validate(self) -> None:
         if not self.enabled:
             return
-        if self.transport not in {"http", "stdio"}:
+        if self.transport not in {"http", "streamable-http", "stdio"}:
             raise ValueError(f"Unsupported Alpaca MCP transport '{self.transport}'.")
         if self.transport == "http" and not (self.base_url or self.host):
             raise ValueError("HTTP transport requires a host or base_url value.")
