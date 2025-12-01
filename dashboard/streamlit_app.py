@@ -16,6 +16,27 @@ CHECK_SERVICES = os.getenv("DASHBOARD_SERVICE_CHECK", "true").lower() not in ("0
 SSH_CMD = os.getenv("DASHBOARD_SERVICE_SSH", "").strip()
 
 
+def _color_from_status(status: str) -> str:
+    if status.startswith("active") or status == "ok":
+        return "green"
+    if status in {"activating", "reloading", "skipped"}:
+        return "yellow"
+    return "red"
+
+
+def _color_from_mcp(status: str) -> str:
+    if status == "ok":
+        return "green"
+    if status.startswith("error"):
+        return "red"
+    return "yellow"
+
+
+def status_badge(text: str, color: str) -> str:
+    dot = {"green": "🟢", "yellow": "🟡", "red": "🔴"}.get(color, "⚪")
+    return f"{dot} {text}"
+
+
 def status_badge(text: str, color: str) -> str:
     dot = {"green": "🟢", "yellow": "🟡", "red": "🔴"}.get(color, "⚪")
     return f"{dot} {text}"
@@ -101,6 +122,40 @@ def mcp_clock(url: str = MCP_URL) -> Dict[str, Any]:
         return {"status": "red", "message": str(exc)}
 
 
+def mcp_account(url: str = MCP_URL) -> Dict[str, Any]:
+    try:
+        headers = {"Accept": "application/json, text/event-stream"}
+        payload = {"jsonrpc": "2.0", "id": 1, "method": "call_tool", "params": {"name": "get_account_info", "arguments": {}}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code not in (200, 400, 406):
+            return {}
+        data = resp.json()
+        result = data.get("result") or {}
+        text = result.get("content") or ""
+        return _parse_account_text(text)
+    except Exception:
+        return {}
+
+
+def _parse_account_text(text: str) -> Dict[str, float]:
+    vals: Dict[str, float] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        label, val = line.split(":", 1)
+        key = label.strip().lower().replace(" ", "_")
+        try:
+            num = float(str(val).replace("$", "").replace(",", "").strip())
+        except ValueError:
+            continue
+        vals[key] = num
+    return {
+        "cash": vals.get("cash", 0.0),
+        "buying_power": vals.get("buying_power", vals.get("buying_power_usd", 0.0)),
+        "portfolio_value": vals.get("portfolio_value", vals.get("equity", 0.0)),
+    }
+
+
 def _parse_clock_text(text: str) -> Dict[str, Any]:
     lines = [line.strip() for line in text.splitlines() if ":" in line]
     fields: Dict[str, str] = {}
@@ -137,7 +192,7 @@ def _parse_clock_text(text: str) -> Dict[str, Any]:
 
 def render_status():
     st.title("TradingAgents Dashboard")
-    cols = st.columns(4)
+    cols = st.columns(3)
     svc = service_status("tradingagents")
     mcp = mcp_health()
     cols[0].metric("TradingAgents", status_badge(svc, _color_from_status(svc)))
@@ -147,15 +202,21 @@ def render_status():
     if market.get("eta_open_minutes") is not None:
         market_text += f" (opens in {market['eta_open_minutes']}m)"
     cols[2].metric("Market", status_badge(market_text, market.get("status", "red")))
-    cols[3].metric("Results Dir", str(RESULTS_DIR))
 
 
 def render_account(run: Dict[str, Any]):
     st.subheader("Latest Auto-Trade Snapshot")
     acct = run.get("account_snapshot", {}) or {}
+    # fallback to top-level fields
     cash = acct.get("cash", run.get("cash", 0))
     bp = acct.get("buying_power", run.get("buying_power", 0))
     pv = acct.get("portfolio_value", run.get("portfolio_value", 0))
+    # if still empty, try live from MCP
+    if cash == 0 and bp == 0 and pv == 0:
+        live = mcp_account()
+        cash = live.get("cash", cash)
+        bp = live.get("buying_power", bp)
+        pv = live.get("portfolio_value", pv)
     cols = st.columns(3)
     cols[0].metric("Cash", f"${cash:,}")
     cols[1].metric("Buying Power", f"${bp:,}")
