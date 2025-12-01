@@ -269,6 +269,16 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
+### Deployment (GitHub Actions)
+
+An opinionated CI/CD workflow lives at `.github/workflows/deploy.yml`. Set the following GitHub Actions secrets to enable push-to-deploy (rsync + service restart on your server):
+- `DEPLOY_HOST` (e.g., your VM IP)
+- `DEPLOY_USER` (e.g., deploy)
+- `DEPLOY_PATH` (optional, defaults to `/opt/tradingagents`)
+- `DEPLOY_KEY` (private SSH key for the deploy user)
+
+The workflow installs deps, runs tests, rsyncs the repo (excluding results/.env/.venv), then restarts the `tradingagents` systemd service.
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
