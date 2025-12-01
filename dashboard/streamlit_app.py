@@ -115,8 +115,8 @@ def mcp_clock(url: str = MCP_URL) -> Dict[str, Any]:
             return {"status": "red", "message": f"http {resp.status_code}"}
         data = resp.json()
         result = data.get("result") or {}
-        text = result.get("content") or ""
-        parsed = _parse_clock_text(text)
+        content = result.get("content")
+        parsed = _parse_clock_text(content)
         return parsed
     except Exception as exc:
         return {"status": "red", "message": str(exc)}
@@ -131,33 +131,38 @@ def mcp_account(url: str = MCP_URL) -> Dict[str, Any]:
             return {}
         data = resp.json()
         result = data.get("result") or {}
-        text = result.get("content") or ""
-        return _parse_account_text(text)
+        content = result.get("content")
+        return _parse_account_text(content)
     except Exception:
         return {}
 
 
-def _parse_account_text(text: str) -> Dict[str, float]:
+def _parse_account_text(content: Any) -> Dict[str, float]:
     vals: Dict[str, float] = {}
-    for line in text.splitlines():
-        if ":" not in line:
-            continue
-        label, val = line.split(":", 1)
-        key = label.strip().lower().replace(" ", "_")
-        try:
-            num = float(str(val).replace("$", "").replace(",", "").strip())
-        except ValueError:
-            continue
-        vals[key] = num
+    if isinstance(content, dict):
+        vals = {k.lower(): v for k, v in content.items()}
+    elif isinstance(content, str):
+        for line in content.splitlines():
+            if ":" not in line:
+                continue
+            label, val = line.split(":", 1)
+            key = label.strip().lower().replace(" ", "_")
+            try:
+                num = float(str(val).replace("$", "").replace(",", "").strip())
+            except ValueError:
+                continue
+            vals[key] = num
     return {
-        "cash": vals.get("cash", 0.0),
-        "buying_power": vals.get("buying_power", vals.get("buying_power_usd", 0.0)),
-        "portfolio_value": vals.get("portfolio_value", vals.get("equity", 0.0)),
+        "cash": float(vals.get("cash", 0.0) or 0.0),
+        "buying_power": float(vals.get("buying_power", vals.get("buying_power_usd", 0.0) or 0.0)),
+        "portfolio_value": float(vals.get("portfolio_value", vals.get("equity", 0.0) or 0.0)),
     }
 
 
 def _parse_clock_text(text: str) -> Dict[str, Any]:
-    lines = [line.strip() for line in text.splitlines() if ":" in line]
+    if not text:
+        return {"status": "red", "message": "no clock"}
+    lines = [line.strip() for line in str(text).splitlines() if ":" in line]
     fields: Dict[str, str] = {}
     for line in lines:
         label, val = line.split(":", 1)
@@ -212,8 +217,8 @@ def render_account(run: Dict[str, Any]):
     bp = acct.get("buying_power", run.get("buying_power", 0))
     pv = acct.get("portfolio_value", run.get("portfolio_value", 0))
     # if still empty, try live from MCP
-    if cash == 0 and bp == 0 and pv == 0:
-        live = mcp_account()
+    live = mcp_account()
+    if live:
         cash = live.get("cash", cash)
         bp = live.get("buying_power", bp)
         pv = live.get("portfolio_value", pv)
