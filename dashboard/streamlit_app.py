@@ -16,6 +16,11 @@ CHECK_SERVICES = os.getenv("DASHBOARD_SERVICE_CHECK", "true").lower() not in ("0
 SSH_CMD = os.getenv("DASHBOARD_SERVICE_SSH", "").strip()
 
 
+def status_badge(text: str, color: str) -> str:
+    dot = {"green": "🟢", "yellow": "🟡", "red": "🔴"}.get(color, "⚪")
+    return f"{dot} {text}"
+
+
 def read_json_files(path: Path, prefix: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     if not path.exists():
@@ -80,12 +85,68 @@ def mcp_health(url: str = MCP_URL) -> str:
         return f"error: {exc}"
 
 
+def mcp_clock(url: str = MCP_URL) -> Dict[str, Any]:
+    try:
+        headers = {"Accept": "application/json, text/event-stream"}
+        payload = {"jsonrpc": "2.0", "id": 1, "method": "call_tool", "params": {"name": "get_market_clock", "arguments": {}}}
+        resp = requests.post(url, json=payload, headers=headers, timeout=5)
+        if resp.status_code not in (200, 400, 406):
+            return {"status": "red", "message": f"http {resp.status_code}"}
+        data = resp.json()
+        result = data.get("result") or {}
+        text = result.get("content") or ""
+        parsed = _parse_clock_text(text)
+        return parsed
+    except Exception as exc:
+        return {"status": "red", "message": str(exc)}
+
+
+def _parse_clock_text(text: str) -> Dict[str, Any]:
+    lines = [line.strip() for line in text.splitlines() if ":" in line]
+    fields: Dict[str, str] = {}
+    for line in lines:
+        label, val = line.split(":", 1)
+        fields[label.strip().lower()] = val.strip()
+    is_open = "yes" in (fields.get("is open", "").lower())
+    current_time = fields.get("current time")
+    next_open = fields.get("next open")
+    next_close = fields.get("next close")
+    status = "green" if is_open else "yellow"
+    eta = None
+    if not is_open and next_open:
+        try:
+            from datetime import datetime, timezone
+
+            nxt = next_open.replace(" ", "T", 1) if "T" not in next_open and " " in next_open else next_open
+            dt = datetime.fromisoformat(nxt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            eta = max(int((dt - now).total_seconds() // 60), 0)
+        except Exception:
+            eta = None
+    return {
+        "status": status,
+        "is_open": is_open,
+        "current_time": current_time,
+        "next_open": next_open,
+        "next_close": next_close,
+        "eta_open_minutes": eta,
+    }
+
+
 def render_status():
     st.title("TradingAgents Dashboard")
     cols = st.columns(4)
-    cols[0].metric("TradingAgents", service_status("tradingagents"))
-    cols[1].metric("Alpaca MCP", service_status("alpaca-mcp"))
-    cols[2].metric("MCP Health", mcp_health())
+    svc = service_status("tradingagents")
+    mcp = mcp_health()
+    cols[0].metric("TradingAgents", status_badge(svc, _color_from_status(svc)))
+    cols[1].metric("Alpaca MCP", status_badge(mcp, _color_from_mcp(mcp)))
+    market = mcp_clock()
+    market_text = "open" if market.get("is_open") else "closed"
+    if market.get("eta_open_minutes") is not None:
+        market_text += f" (opens in {market['eta_open_minutes']}m)"
+    cols[2].metric("Market", status_badge(market_text, market.get("status", "red")))
     cols[3].metric("Results Dir", str(RESULTS_DIR))
 
 
@@ -172,3 +233,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# Helpers for status coloring
+def _color_from_status(status: str) -> str:
+    if status.startswith("active") or status == "ok":
+        return "green"
+    if status in {"activating", "reloading", "skipped"}:
+        return "yellow"
+    return "red"
+
+
+def _color_from_mcp(status: str) -> str:
+    if status == "ok":
+        return "green"
+    if status.startswith("error"):
+        return "red"
+    return "yellow"
