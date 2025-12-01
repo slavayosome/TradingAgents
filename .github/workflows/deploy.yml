@@ -39,4 +39,6 @@ jobs:
             . .venv/bin/activate
             pip install -r requirements.txt -r requirements-dev.txt || pip install -r requirements.txt pytest
             pip install -e .
-            sudo systemctl restart tradingagents tradingagents-dashboard
+            echo "${DEPLOY_PASSWORD:?missing DEPLOY_PASSWORD secret}" | sudo -S systemctl restart tradingagents tradingagents-dashboard
+        env:
+          DEPLOY_PASSWORD: ${{ secrets.DEPLOY_PASSWORD }}
