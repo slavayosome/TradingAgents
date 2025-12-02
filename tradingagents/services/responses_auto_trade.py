@@ -722,6 +722,7 @@ class ResponsesAutoTradeService(ResponsesAutoTradeHelpers):
                 conversation.append({"role": "assistant", "content": final_text})
             summary = _extract_json_block(final_text)
 
+        last_good_summary = summary if summary.get("decisions") else {}
         guard_info = self._plan_guard(summary)
         followups = 0
         while (
@@ -759,6 +760,16 @@ class ResponsesAutoTradeService(ResponsesAutoTradeHelpers):
             if final_text:
                 conversation.append({"role": "assistant", "content": final_text})
             summary = _extract_json_block(final_text)
+            if summary.get("decisions"):
+                last_good_summary = summary
+            else:
+                # If the follow-up lost decisions, fall back to last good summary and stop follow-ups.
+                self.logger.warning(
+                    "Follow-up response missing decisions; reusing previous summary."
+                )
+                summary = last_good_summary or {}
+                guard_info = {"needs_followup": False, "details": [], "reason": "fallback_to_previous_summary"}
+                break
             guard_info = self._plan_guard(summary)
 
         decisions, focus = self._decisions_from_summary(summary)
