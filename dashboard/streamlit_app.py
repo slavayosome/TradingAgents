@@ -8,11 +8,15 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import streamlit as st
+from dotenv import load_dotenv
 
 # Ensure project root on path for local dashboard runs
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Load .env so MODEL_BADGE/MCP_URL/etc. resolve when running via systemd or locally
+load_dotenv(ROOT / ".env")
 
 from tradingagents.integrations.alpaca_mcp import AlpacaMCPClient, AlpacaMCPConfig, AlpacaMCPError
 
@@ -328,6 +332,47 @@ def render_hypotheses(records: List[Dict[str, Any]]):
     st.dataframe(rows, use_container_width=True)
 
 
+def _shorten(text: str, limit: int = 800) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def render_llm_trace(latest_run: Optional[Dict[str, Any]]):
+    st.subheader("LLM Trace")
+    if not latest_run:
+        st.info("No run loaded.")
+        return
+    raw = latest_run.get("raw_state", {}) or {}
+    llm_req = raw.get("llm_request") or {}
+    llm_resp = raw.get("llm_response") or {}
+    if not llm_req and not llm_resp:
+        st.info("LLM request/response not captured for this run.")
+        return
+    req_model = llm_req.get("model") or MODEL_BADGE or "(unknown)"
+    st.caption(f"Model: {req_model}  |  Reasoning: {llm_req.get('reasoning') or 'n/a'}")
+    with st.expander("LLM Request", expanded=False):
+        st.json(
+            {
+                "model": req_model,
+                "reasoning": llm_req.get("reasoning"),
+                "max_turns": llm_req.get("max_turns"),
+                "allow_tools": llm_req.get("allow_tools"),
+            }
+        )
+        conv = llm_req.get("conversation") or []
+        if conv:
+            st.text_area("Conversation (truncated)", _shorten(str(conv), 2000), height=200)
+    with st.expander("LLM Response", expanded=False):
+        if isinstance(llm_resp, dict):
+            st.text_area("Output", _shorten(str(llm_resp.get("output_text") or ""), 2000), height=200)
+            st.text_area("Summary", _shorten(str(llm_resp.get("summary") or ""), 2000), height=200)
+        else:
+            st.text_area("Raw", _shorten(str(llm_resp), 2000), height=200)
+
+
 def main():
     render_status()
     refresh_live = st.button("Refresh Live MCP Account")
@@ -338,6 +383,7 @@ def main():
         render_decisions(latest)
     else:
         st.info("No auto-trade runs found yet.")
+    render_llm_trace(latest)
     render_hypotheses(load_hypotheses())
 
 
