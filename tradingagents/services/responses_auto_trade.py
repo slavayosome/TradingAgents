@@ -1038,6 +1038,7 @@ class ResponsesAutoTradeService:
             ticker = str(entry.get("ticker") or "").upper()
             if not ticker:
                 continue
+            triggers = entry.get("triggers") or entry.get("action_queue")
             statuses = entry.get("plan_status") or {}
             incomplete: List[str] = []
             if isinstance(statuses, dict) and statuses:
@@ -1059,6 +1060,8 @@ class ResponsesAutoTradeService:
             elif entry.get("plan_actions"):
                 for action in entry.get("plan_actions") or []:
                     incomplete.append(f"{action} (no status reported)")
+            if not triggers:
+                incomplete.append("triggers missing (must include price target/stop and time-based trigger)")
             if incomplete:
                 details.append({"ticker": ticker, "steps": incomplete})
                 action = str(entry.get("action") or "").upper()
