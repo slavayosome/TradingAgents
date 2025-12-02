@@ -1716,6 +1716,61 @@ if not hasattr(ResponsesAutoTradeService, "_extract_tool_calls"):
 
     ResponsesAutoTradeService._extract_tool_calls = _fallback_extract_tool_calls  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _plan_guard exists
+if not hasattr(ResponsesAutoTradeService, "_plan_guard"):
+    def _fallback_plan_guard(self, summary: Dict[str, Any]) -> Dict[str, Any]:  # type: ignore[method-assign]
+        decisions = summary.get("decisions") or []
+        details: List[Dict[str, Any]] = []
+        blocked: List[str] = []
+        done_values = getattr(self, "_plan_status_done_values", set())
+        for entry in decisions:
+            ticker = str(entry.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            triggers = entry.get("triggers") or entry.get("action_queue")
+            statuses = entry.get("plan_status") or {}
+            incomplete: List[str] = []
+            if isinstance(statuses, dict) and statuses:
+                for step, status in statuses.items():
+                    label = str(step or "").strip() or "<unnamed step>"
+                    status_text = str(status or "").strip()
+                    normalized = status_text.lower()
+                    ok = (
+                        normalized in done_values
+                        or "done" in normalized
+                        or "complete" in normalized
+                        or "skip" in normalized
+                        or "n/a" in normalized
+                    )
+                    if ok:
+                        continue
+                    display = f\"{label} ({status_text or 'pending'})\"
+                    incomplete.append(display)
+            elif entry.get("plan_actions"):
+                for action in entry.get("plan_actions") or []:
+                    incomplete.append(f\"{action} (no status reported)\")
+            if not triggers:
+                incomplete.append(\"triggers missing (must include price target/stop and time-based trigger)\")
+            action = str(entry.get("action") or "").upper()
+            if action in {"BUY", "SELL"} and not getattr(self, "_has_order_details", lambda _: False)(entry):
+                incomplete.append(\"order sizing/time_in_force missing (provide quantity or notional + reference_price and time_in_force)\")
+            if incomplete:
+                details.append({\"ticker\": ticker, \"steps\": incomplete})
+                if action in {"BUY", "SELL"} and ticker not in blocked:
+                    blocked.append(ticker)
+        reason = ""
+        if details:
+            joined = "; ".join(f\"{item['ticker']}: {', '.join(item['steps'])}\" for item in details)
+            reason = f\"Plan validation incomplete; pending steps -> {joined}\"
+        return {
+            "needs_followup": bool(details),
+            "blocked_actions": blocked,
+            "details": details,
+            "reason": reason,
+        }
+
+    ResponsesAutoTradeService._plan_guard = _fallback_plan_guard  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
