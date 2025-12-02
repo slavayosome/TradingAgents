@@ -48,6 +48,7 @@ class RealtimeBroker:
         data_feed = DataFeed.IEX if feed.lower() == "iex" else DataFeed.SIP
         self.stream = StockDataStream(api_key, secret_key, feed=data_feed)
         self.triggers: Dict[str, List[PriceTrigger]] = {}
+        self.macro_triggers: Dict[str, List[Any]] = {}
         self._subscribed: set[str] = set()
         self._registered_keys: set[str] = set()
         self._lock = threading.Lock()
@@ -72,6 +73,7 @@ class RealtimeBroker:
         with self._lock:
             if reset:
                 self.triggers.clear()
+                self.macro_triggers.clear()
                 self._registered_keys.clear()
 
             registered = 0
@@ -79,6 +81,10 @@ class RealtimeBroker:
                 for trigger in self._parse_triggers(record):
                     if self._register_trigger_locked(trigger):
                         registered += 1
+                # Collect macro/custom triggers for surfacing
+                macros = [raw for raw in record.triggers if self._is_macro_trigger(raw)]
+                if macros:
+                    self.macro_triggers[record.ticker.upper()] = macros
         return registered
 
     def _parse_triggers(self, record: HypothesisRecord) -> List[PriceTrigger]:
@@ -143,6 +149,13 @@ class RealtimeBroker:
             except ValueError:
                 return None
         return None
+
+    def _is_macro_trigger(self, raw: Any) -> bool:
+        if isinstance(raw, dict):
+            trig_type = (raw.get("type") or "").lower()
+            return trig_type in {"macro", "custom"} or bool(raw.get("description"))
+        text = str(raw).strip().lower()
+        return bool(text) and not text.startswith("price >=") and not text.startswith("price <=")
 
     def _extract_symbol_value(self, default_symbol: str, text: str, operator: str) -> (str, float):
         left, right = text.replace("price", "").split(operator, 1)
