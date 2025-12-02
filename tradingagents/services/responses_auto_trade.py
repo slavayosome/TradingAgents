@@ -1536,6 +1536,29 @@ if not hasattr(ResponsesAutoTradeService, "_strategy_presets_brief"):
 
     ResponsesAutoTradeService._strategy_presets_brief = _fallback_strategy_presets_brief  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _build_system_prompt exists (some deployments may load stale bytecode)
+if not hasattr(ResponsesAutoTradeService, "_build_system_prompt"):
+    def _fallback_build_system_prompt(self) -> str:  # type: ignore[method-assign]
+        trade_clause = (
+            "After producing the JSON, call `submit_trade_order` for every ticker whose action is BUY or SELL "
+            "(subject to trade execution settings)."
+            if getattr(self, "trade_tool_enabled", False)
+            else "Do not call `submit_trade_order`; once your plan summary shows every step resolved, the autopilot "
+            "will handle trade submission automatically."
+        )
+        prompt = prompt_text(self._PROMPT_NAME)
+        if not prompt:
+            raise RuntimeError(
+                f"Missing prompt configuration for {self._PROMPT_NAME}. "
+                "Ensure prompts/responses_auto_trade.json exists with system_prompt text."
+            )
+        return prompt.replace(
+            "After producing the JSON, call `submit_trade_order` for every ticker whose action is BUY or SELL (subject to trade execution settings).",
+            trade_clause,
+        )
+
+    ResponsesAutoTradeService._build_system_prompt = _fallback_build_system_prompt  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
