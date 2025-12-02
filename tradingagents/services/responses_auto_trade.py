@@ -439,6 +439,7 @@ class ResponsesAutoTradeService:
 
     _PROMPT_NAME = "responses_auto_trade"
     _MEMORY_SCHEMA_VERSION = "v1"
+    _ALLOWED_TIFS = {"DAY", "GTC", "FOK", "IOC", "OPG", "CLS"}
 
     def __init__(
         self,
@@ -486,7 +487,13 @@ class ResponsesAutoTradeService:
         }
         self._prompt_defaults = prompt_defaults(self._PROMPT_NAME)
 
-    def run(self, snapshot: AccountSnapshot, *, focus_override: Optional[List[str]] = None) -> AutoTradeResult:
+    def run(
+        self,
+        snapshot: AccountSnapshot,
+        *,
+        focus_override: Optional[List[str]] = None,
+        allow_market_closed: bool = False,
+    ) -> AutoTradeResult:
         self._reference_prices = _snapshot_reference_prices(snapshot)
         toolbox = TradingToolbox(
             self.config,
