@@ -736,8 +736,12 @@ def _refresh_stream_registrations(
     if broker is not None:
         try:
             registered = broker.refresh_triggers(records, reset=True)
-            if registered:
-                console.print(f"Realtime broker tracking {registered} trigger(s).", style="dim")
+            stats = broker.stats() if hasattr(broker, "stats") else {}
+            if registered or stats:
+                msg = f"Realtime broker tracking {stats.get('triggers', registered)} trigger(s)"
+                if stats:
+                    msg += f" across {stats.get('symbols', 0)} symbols"
+                console.print(msg + ".", style="dim")
         except Exception as exc:  # pragma: no cover - best effort logging
             console.print(f"Realtime broker refresh failed: {exc}", style="red")
 

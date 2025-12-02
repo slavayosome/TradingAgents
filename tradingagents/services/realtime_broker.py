@@ -105,18 +105,14 @@ class RealtimeBroker:
         if isinstance(raw, dict):
             trig_type = (raw.get("type") or "").lower()
             condition = raw.get("condition") or {}
-            operator = str(condition.get("operator") or "").strip()
-            value = condition.get("value")
-            source = str(condition.get("source") or "").strip().lower()
-            symbol = default_symbol.upper()
-            if source and source != "price":
+            parsed = self._parse_condition(condition)
+            if not parsed:
+                # maybe condition is a string
+                parsed = self._parse_condition(condition.get("text") if isinstance(condition, dict) else condition)
+            if not parsed:
                 return None
-            try:
-                value_f = float(value)
-            except (TypeError, ValueError):
-                return None
-            if operator not in {">=", "<="}:
-                return None
+            operator, value_f = parsed
+            symbol = record.ticker.upper()
             return PriceTrigger(
                 hypothesis_id=raw.get("hypothesis_id") or record.id,
                 symbol=symbol,
@@ -126,27 +122,56 @@ class RealtimeBroker:
 
         # Text trigger
         text = str(raw).strip().lower()
+        parsed = self._parse_condition(text)
+        if parsed:
+            operator, value = parsed
+            return PriceTrigger(
+                hypothesis_id=record.id,
+                symbol=record.ticker.upper(),
+                operator=operator,
+                value=value,
+            )
+        return None
+
+    def _parse_condition(self, condition: Any) -> Optional[tuple[str, float]]:
+        """Parse condition dict or text into (operator, value) for price triggers."""
+        if isinstance(condition, dict):
+            source = str(condition.get("source") or "").lower()
+            if source and source != "price":
+                return None
+            operator = str(condition.get("operator") or "").strip()
+            value = condition.get("value")
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if operator not in {">=", "<="}:
+                return None
+            return operator, value_f
+        text = str(condition or "").strip().lower()
+        if not text:
+            return None
+        for op in (">=", "<="):
+            if op in text:
+                try:
+                    parts = text.split(op, 1)
+                    right = parts[1].strip()
+                    value_str = right.split()[0]
+                    value_f = float(value_str)
+                    return op, value_f
+                except Exception:
+                    continue
         if text.startswith("price >="):
             try:
-                symbol, value = self._extract_symbol_value(record.ticker, text, ">=")
-                return PriceTrigger(
-                    hypothesis_id=record.id,
-                    symbol=symbol,
-                    operator=">=",
-                    value=value,
-                )
-            except ValueError:
+                _, value = self._extract_symbol_value("", text, ">=")
+                return ">=", value
+            except Exception:
                 return None
         if text.startswith("price <="):
             try:
-                symbol, value = self._extract_symbol_value(record.ticker, text, "<=")
-                return PriceTrigger(
-                    hypothesis_id=record.id,
-                    symbol=symbol,
-                    operator="<=",
-                    value=value,
-                )
-            except ValueError:
+                _, value = self._extract_symbol_value("", text, "<=")
+                return "<=", value
+            except Exception:
                 return None
         return None
 
@@ -185,6 +210,12 @@ class RealtimeBroker:
                 if self._register_trigger_locked(trigger):
                     registered += 1
             return registered
+
+    def stats(self) -> Dict[str, int]:
+        with self._lock:
+            symbols = len(self.triggers)
+            total = sum(len(bucket) for bucket in self.triggers.values())
+        return {"symbols": symbols, "triggers": total}
 
     def _trigger_key(self, trigger: PriceTrigger) -> str:
         return f"{trigger.hypothesis_id}:{trigger.symbol}:{trigger.operator}:{trigger.value}"
