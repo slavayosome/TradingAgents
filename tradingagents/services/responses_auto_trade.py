@@ -25,6 +25,7 @@ from tradingagents.services.memory import TickerMemoryStore
 from tradingagents.agents.analysts.market_analyst import create_market_analyst
 from tradingagents.agents.analysts.news_analyst import create_news_analyst
 from tradingagents.agents.analysts.fundamentals_analyst import create_fundamentals_analyst
+from tradingagents.services.realtime_broker import PriceTrigger
 
 
 def _extract_json_block(text: str) -> Dict[str, Any]:
@@ -954,6 +955,59 @@ class ResponsesAutoTradeService:
             ok, error = self.memory_store.append_structured(decision.ticker, entry)
             if not ok and self.logger:
                 self.logger.warning("Memory validation failed for %s: %s", decision.ticker, error)
+            self._register_triggers_for_runtime(entry)
+
+    def _register_triggers_for_runtime(self, memory_entry: Dict[str, Any]) -> None:
+        """Register price-based triggers with realtime broker if available."""
+        broker = getattr(self.graph, "realtime_broker", None)
+        if not broker:
+            return
+        triggers = memory_entry.get("triggers") or []
+        ticker = memory_entry.get("ticker", "")
+        parsed: List[PriceTrigger] = []
+        for trig in triggers:
+            pt = self._parse_trigger_to_price_trigger(ticker, trig)
+            if pt:
+                parsed.append(pt)
+        if not parsed:
+            return
+        try:
+            broker.register_manual_triggers(parsed)
+        except Exception:
+            if self.logger:
+                self.logger.debug("Failed to register triggers with realtime broker", exc_info=True)
+
+    def _parse_trigger_to_price_trigger(self, default_symbol: str, raw: Any) -> Optional[PriceTrigger]:
+        """Convert a memory trigger into a PriceTrigger if price-based."""
+        if isinstance(raw, dict):
+            condition = raw.get("condition") or {}
+            source = str(condition.get("source") or "").lower()
+            if source and source != "price":
+                return None
+            operator = str(condition.get("operator") or "").strip()
+            value = condition.get("value")
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if operator not in {">=", "<="}:
+                return None
+            symbol = str(raw.get("symbol") or default_symbol).upper()
+            return PriceTrigger(hypothesis_id="", symbol=symbol, operator=operator, value=value_f)
+        text = str(raw).strip().lower()
+        if text.startswith("price >="):
+            try:
+                _, value = self._extract_symbol_value(default_symbol, text, ">=")
+                return PriceTrigger(hypothesis_id="", symbol=default_symbol.upper(), operator=">=", value=value)
+            except ValueError:
+                return None
+        if text.startswith("price <="):
+            try:
+                _, value = self._extract_symbol_value(default_symbol, text, "<=")
+                return PriceTrigger(hypothesis_id="", symbol=default_symbol.upper(), operator="<=", value=value)
+            except ValueError:
+                return None
+        return None
 
     def _build_memory_entry(self, decision: TickerDecision, snapshot: AccountSnapshot) -> Dict[str, Any]:
         """Map a TickerDecision into the unified memory schema."""

@@ -164,6 +164,15 @@ class RealtimeBroker:
             self._subscribed.add(symbol)
         return True
 
+    def register_manual_triggers(self, triggers: List[PriceTrigger]) -> int:
+        """Register triggers supplied at runtime (e.g., from decisions/memory)."""
+        with self._lock:
+            registered = 0
+            for trigger in triggers:
+                if self._register_trigger_locked(trigger):
+                    registered += 1
+            return registered
+
     def _trigger_key(self, trigger: PriceTrigger) -> str:
         return f"{trigger.hypothesis_id}:{trigger.symbol}:{trigger.operator}:{trigger.value}"
 
