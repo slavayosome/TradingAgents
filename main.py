@@ -28,7 +28,7 @@ from tradingagents.services.autopilot_worker import AutopilotWorker
 from tradingagents.services.autopilot_broker import AutopilotBroker
 from tradingagents.services.realtime_broker import RealtimeBroker
 from tradingagents.services.realtime_news_broker import RealtimeNewsBroker
-from tradingagents.services.hypothesis_store import HypothesisStore
+from tradingagents.services.hypothesis_store import HypothesisStore, HypothesisRecord
 
 
 console = Console()
@@ -617,6 +617,7 @@ def _run_autopilot_loop(
     last_signature = ""
     last_heartbeat = 0.0
     events_since_heartbeat = 0
+    fired_deadlines: set[str] = set()
     console.print(
         f"Entering autopilot loop (event every {event_interval}s, price poll every {price_poll_interval}s)…",
         style="dim",
@@ -631,6 +632,7 @@ def _run_autopilot_loop(
             if signature != last_signature:
                 last_signature = signature
                 _refresh_stream_registrations(realtime_state, news_state, records)
+                _check_deadlines(records, autopilot_worker, fired_deadlines)
 
             now = time.time()
             if now - last_price_poll >= price_poll_interval:
@@ -646,6 +648,7 @@ def _run_autopilot_loop(
                 _print_autopilot_heartbeat(events_since_heartbeat, stats)
                 events_since_heartbeat = 0
                 last_heartbeat = now
+                _check_deadlines(records, autopilot_worker, fired_deadlines)
 
             if now - last_market_check >= next_market_check_delay:
                 market_status = _get_market_status(auto_trader)
@@ -783,6 +786,63 @@ def _collect_stream_stats(
         "news_connected": news_connected,
         "news_symbols": news_symbols,
     }
+
+
+def _check_deadlines(
+    records: List[HypothesisRecord],
+    worker: AutopilotWorker,
+    fired: set[str],
+) -> None:
+    now = datetime.now(timezone.utc)
+    for record in records:
+        for trig in record.triggers:
+            deadline = _extract_deadline(trig)
+            if not deadline:
+                continue
+            key = f"{record.id}:{deadline.isoformat()}"
+            if key in fired:
+                continue
+            if now >= deadline:
+                event = worker.enqueue_event(
+                    record.id,
+                    event_type="time_trigger",
+                    payload={"deadline": deadline.isoformat()},
+                )
+                fired.add(key)
+                console.print(f"Enqueued deadline trigger for {record.ticker} (event {event.id})", style="dim")
+
+
+def _extract_deadline(trigger: Any) -> Optional[datetime]:
+    if isinstance(trigger, dict):
+        cond = trigger.get("condition") or {}
+        valid_until = cond.get("valid_until")
+        if valid_until:
+            try:
+                dt = datetime.fromisoformat(str(valid_until))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                return None
+        if trigger.get("type") == "time" and trigger.get("deadline"):
+            try:
+                dt = datetime.fromisoformat(str(trigger.get("deadline")))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                return None
+    text = str(trigger).strip().lower()
+    if text.startswith("deadline:"):
+        raw = text.split("deadline:", 1)[1].strip()
+        try:
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            return None
+    return None
 
 
 def _print_autopilot_heartbeat(events_processed: int, stats: Dict[str, Any]) -> None:
