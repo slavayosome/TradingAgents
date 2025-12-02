@@ -1795,6 +1795,27 @@ if not hasattr(ResponsesAutoTradeService, "_plan_guard"):
 
     ResponsesAutoTradeService._plan_guard = _fallback_plan_guard  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _build_memory_entry exists
+if not hasattr(ResponsesAutoTradeService, "_build_memory_entry"):
+    def _fallback_build_memory_entry(self, decision: TickerDecision, snapshot: AccountSnapshot) -> Dict[str, Any]:  # type: ignore[method-assign]
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "ticker": decision.ticker,
+            "position": self._position_snapshot(decision.ticker, snapshot) or {},
+            "market_snapshot": {},
+            "strategy": decision.strategy.to_dict() if decision.strategy else {},
+            "thesis": {"rationale": decision.hypothesis.get("rationale") if isinstance(decision.hypothesis, dict) else ""},
+            "triggers": decision.action_queue,
+            "current_decision": {
+                "action": decision.final_decision or decision.immediate_action,
+                "reason": decision.final_notes,
+                "valid_until": getattr(decision.strategy, "deadline", None) if decision.strategy else None,
+            },
+            "next_plan": {"steps": decision.sequential_plan.actions if decision.sequential_plan else []},
+        }
+
+    ResponsesAutoTradeService._build_memory_entry = _fallback_build_memory_entry  # type: ignore[attr-defined]
+
 
 def _log_runtime_introspection() -> None:
     """Optional import-time introspection to detect stale code paths in deployments."""
