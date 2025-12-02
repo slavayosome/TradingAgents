@@ -560,7 +560,7 @@ class ResponsesAutoTradeService:
 
         transcript: List[str] = []
         submitted_trades: Set[Tuple[str, str]] = set()
-        response = self._responses_call(
+        response, request_meta = self._responses_call(
             conversation,
             toolbox,
             transcript,
@@ -646,6 +646,11 @@ class ResponsesAutoTradeService:
             "responses_summary": summary,
             "responses_output_text": final_text,
             "plan_guard": guard_info,
+            "llm_request": request_meta,
+            "llm_response": {
+                "output_text": final_text,
+                "summary": summary,
+            },
         }
         if guard_info.get("needs_followup") and guard_info.get("reason"):
             raw_state.setdefault("skip_reason", guard_info.get("reason"))
@@ -701,6 +706,13 @@ class ResponsesAutoTradeService:
 
         repeat_guard: Dict[str, int] = {}
         narration_reminder_issued = False
+
+        request_meta: Dict[str, Any] = {
+            "model": model,
+            "reasoning": reasoning_text,
+            "max_turns": max_turns,
+            "allow_tools": allow_tools,
+        }
 
         while remaining_turns > 0:
             request_kwargs: Dict[str, Any] = {
@@ -797,7 +809,8 @@ class ResponsesAutoTradeService:
 
             if final_response is None:
                 raise RuntimeError("Streaming response did not complete.")
-            return final_response
+            request_meta["conversation"] = conversation
+            return final_response, request_meta
 
         raise RuntimeError("Responses conversation exceeded maximum turns without completion.")
 

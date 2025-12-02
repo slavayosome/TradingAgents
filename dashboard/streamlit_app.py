@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 import streamlit as st
+from tradingagents.integrations.alpaca_mcp import AlpacaMCPClient, AlpacaMCPConfig, AlpacaMCPError
 
 RESULTS_DIR = Path(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"))
 HYP_DIR = RESULTS_DIR / "hypotheses"
@@ -14,6 +15,7 @@ AUTO_RUN_DIR = RESULTS_DIR
 MCP_URL = os.getenv("TRADINGAGENTS_MCP_URL", "http://127.0.0.1:8000/mcp")
 CHECK_SERVICES = os.getenv("DASHBOARD_SERVICE_CHECK", "true").lower() not in ("0", "false", "no")
 SSH_CMD = os.getenv("DASHBOARD_SERVICE_SSH", "").strip()
+MODEL_BADGE = os.getenv("AUTO_TRADE_RESPONSES_MODEL") or os.getenv("TRADINGAGENTS_RESPONSES_MODEL") or ""
 
 
 def _color_from_status(status: str) -> str:
@@ -137,6 +139,26 @@ def mcp_account(url: str = MCP_URL) -> Dict[str, Any]:
         return {}
 
 
+def mcp_account_live(url: str = MCP_URL) -> Dict[str, Any]:
+    """Use the MCP client (session-based) to fetch live account info."""
+    try:
+        cfg = AlpacaMCPConfig.from_dict(
+            {
+                "enabled": True,
+                "transport": "streamable-http",
+                "base_url": url,
+                "required_tools": [],
+            }
+        )
+        client = AlpacaMCPClient(cfg)
+        text = client.fetch_account_info()
+        return _parse_account_text(text)
+    except AlpacaMCPError:
+        return {}
+    except Exception:
+        return {}
+
+
 def _parse_account_text(content: Any) -> Dict[str, float]:
     vals: Dict[str, float] = {}
     if isinstance(content, dict):
@@ -207,17 +229,23 @@ def render_status():
     if market.get("eta_open_minutes") is not None:
         market_text += f" (opens in {market['eta_open_minutes']}m)"
     cols[2].metric("Market", status_badge(market_text, market.get("status", "red")))
+    if MODEL_BADGE:
+        st.caption(f"Model: {MODEL_BADGE}")
 
 
 def render_account(latest_run: Optional[Dict[str, Any]], live: Dict[str, Any]):
     st.subheader("Account Snapshot")
     cash = bp = pv = 0.0
+    source = "snapshot"
+    fetched = None
     if latest_run:
+        fetched = latest_run.get("fetched_at")
         acct = latest_run.get("account_snapshot", {}) or {}
         cash = acct.get("cash", latest_run.get("cash", 0))
         bp = acct.get("buying_power", latest_run.get("buying_power", 0))
         pv = acct.get("portfolio_value", latest_run.get("portfolio_value", 0))
     if live:
+        source = "live MCP"
         cash = live.get("cash", cash)
         bp = live.get("buying_power", bp)
         pv = live.get("portfolio_value", pv)
@@ -225,6 +253,10 @@ def render_account(latest_run: Optional[Dict[str, Any]], live: Dict[str, Any]):
     cols[0].metric("Cash", f"${cash:,}")
     cols[1].metric("Buying Power", f"${bp:,}")
     cols[2].metric("Portfolio", f"${pv:,}")
+    if source == "live MCP":
+        st.caption("Source: live MCP")
+    elif fetched:
+        st.caption(f"Source: latest run ({fetched})")
 
 
 def render_decisions(run: Dict[str, Any]):
@@ -286,8 +318,9 @@ def render_hypotheses(records: List[Dict[str, Any]]):
 
 def main():
     render_status()
+    refresh_live = st.button("Refresh Live MCP Account")
     latest = latest_auto_trade()
-    live_acc = mcp_account()
+    live_acc = mcp_account_live() if refresh_live else mcp_account_live()
     render_account(latest, live_acc)
     if latest:
         render_decisions(latest)
