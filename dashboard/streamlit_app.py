@@ -2,12 +2,24 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
 import streamlit as st
+
+# Ensure project root on path for local dashboard runs
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from tradingagents.integrations.alpaca_mcp import AlpacaMCPClient, AlpacaMCPConfig, AlpacaMCPError
+
+# Ensure project root on path for local dashboard runs
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 RESULTS_DIR = Path(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"))
 HYP_DIR = RESULTS_DIR / "hypotheses"
