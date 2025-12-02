@@ -1575,6 +1575,26 @@ if not hasattr(ResponsesAutoTradeService, "_extract_reasoning_traces"):
 
     ResponsesAutoTradeService._extract_reasoning_traces = _fallback_extract_reasoning_traces  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _response_text exists
+if not hasattr(ResponsesAutoTradeService, "_response_text"):
+    def _fallback_response_text(self, response: Any) -> str:  # type: ignore[method-assign]
+        try:
+            if hasattr(response, "output_text"):
+                return response.output_text or ""
+            # OpenAI Responses usually have choices/message/content
+            msg = getattr(response, "output", None)
+            if isinstance(msg, list) and msg:
+                # if message objects with 'content'
+                first = msg[0]
+                content = getattr(first, "content", None)
+                if content:
+                    return content
+            return ""
+        except Exception:
+            return ""
+
+    ResponsesAutoTradeService._response_text = _fallback_response_text  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
