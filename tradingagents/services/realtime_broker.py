@@ -4,7 +4,7 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Iterable
 
 try:  # optional dependency
     from alpaca.data.live import StockDataStream
@@ -84,34 +84,65 @@ class RealtimeBroker:
     def _parse_triggers(self, record: HypothesisRecord) -> List[PriceTrigger]:
         triggers: List[PriceTrigger] = []
         for raw in record.triggers:
-            text = str(raw).strip().lower()
-            if text.startswith("price >="):
-                try:
-                    symbol, value = self._extract_symbol_value(record.ticker, text, ">=")
-                    triggers.append(
-                        PriceTrigger(
-                            hypothesis_id=record.id,
-                            symbol=symbol,
-                            operator=">=",
-                            value=value,
-                        )
-                    )
-                except ValueError:
-                    continue
-            elif text.startswith("price <="):
-                try:
-                    symbol, value = self._extract_symbol_value(record.ticker, text, "<=")
-                    triggers.append(
-                        PriceTrigger(
-                            hypothesis_id=record.id,
-                            symbol=symbol,
-                            operator="<=",
-                            value=value,
-                        )
-                    )
-                except ValueError:
-                    continue
+            parsed = self._parse_single_trigger(record, raw)
+            if parsed:
+                triggers.append(parsed)
         return triggers
+
+    def _parse_single_trigger(self, record: HypothesisRecord, raw: Any) -> Optional[PriceTrigger]:
+        """
+        Parse a trigger that may be:
+        - Structured dict with fields {type, condition:{operator, value, source}, action,...}
+        - Simple text like "price >= 195"
+        """
+        # Structured trigger
+        if isinstance(raw, dict):
+            trig_type = (raw.get("type") or "").lower()
+            condition = raw.get("condition") or {}
+            operator = str(condition.get("operator") or "").strip()
+            value = condition.get("value")
+            source = str(condition.get("source") or "").strip().lower()
+            symbol = default_symbol.upper()
+            if source and source != "price":
+                return None
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if operator not in {">=", "<="}:
+                return None
+            return PriceTrigger(
+                hypothesis_id=raw.get("hypothesis_id") or record.id,
+                symbol=symbol,
+                operator=operator,
+                value=value_f,
+            )
+
+        # Text trigger
+        text = str(raw).strip().lower()
+        if text.startswith("price >="):
+            try:
+                symbol, value = self._extract_symbol_value(record.ticker, text, ">=")
+                return PriceTrigger(
+                    hypothesis_id=record.id,
+                    symbol=symbol,
+                    operator=">=",
+                    value=value,
+                )
+            except ValueError:
+                return None
+        if text.startswith("price <="):
+            try:
+                symbol, value = self._extract_symbol_value(record.ticker, text, "<=")
+                return PriceTrigger(
+                    hypothesis_id=record.id,
+                    symbol=symbol,
+                    operator="<=",
+                    value=value,
+                )
+            except ValueError:
+                return None
+        return None
 
     def _extract_symbol_value(self, default_symbol: str, text: str, operator: str) -> (str, float):
         left, right = text.replace("price", "").split(operator, 1)
