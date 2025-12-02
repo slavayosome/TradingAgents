@@ -1595,6 +1595,25 @@ if not hasattr(ResponsesAutoTradeService, "_response_text"):
 
     ResponsesAutoTradeService._response_text = _fallback_response_text  # type: ignore[attr-defined]
 
+# Defensive patch: ensure narration and tool emitters exist (no-ops if missing)
+if not hasattr(ResponsesAutoTradeService, "_emit_narration"):
+    def _fallback_emit_narration(self, text: str) -> None:  # type: ignore[method-assign]
+        try:
+            if getattr(self, "logger", None):
+                self.logger.debug("[Narration] %s", text)
+        except Exception:
+            pass
+    ResponsesAutoTradeService._emit_narration = _fallback_emit_narration  # type: ignore[attr-defined]
+
+if not hasattr(ResponsesAutoTradeService, "_emit_tool_event"):
+    def _fallback_emit_tool_event(self, name: str, args: Any, result: Any) -> None:  # type: ignore[method-assign]
+        try:
+            if getattr(self, "logger", None):
+                self.logger.debug("[Tool Event] %s args=%s result=%s", name, args, result)
+        except Exception:
+            pass
+    ResponsesAutoTradeService._emit_tool_event = _fallback_emit_tool_event  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
