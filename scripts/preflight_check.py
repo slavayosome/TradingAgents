@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.prompt_registry import check_prompts, required_prompt_files
 
 
 def _mask(value: str) -> str:
@@ -48,6 +49,8 @@ def run() -> int:
     results_dir = Path(config.get("results_dir", "./results"))
     memory_cfg = (config.get("auto_trade", {}) or {}).get("memory", {}) or {}
     memory_dir = Path(memory_cfg.get("dir", results_dir / "memory"))
+    memory_schema_version = memory_cfg.get("schema_version", "v1")
+    memory_validation = memory_cfg.get("validation_mode", "warn")
 
     env_rows: List[Tuple[str, Any]] = []
     for var in ("OPENAI_API_KEY", "APCA_API_KEY_ID", "APCA_API_SECRET_KEY"):
@@ -73,14 +76,18 @@ def run() -> int:
     writable_memory, memory_msg = _check_writable(memory_dir)
     fs_rows.append(("results_dir", f"{results_dir} ({results_msg})"))
     fs_rows.append(("memory_dir", f"{memory_dir} ({memory_msg})"))
+    fs_rows.append(("memory_schema_version", memory_schema_version))
+    fs_rows.append(("memory_validation_mode", memory_validation))
 
     trade_exec = config.get("trade_execution", {}) or {}
     exec_rows = [
         ("enabled", trade_exec.get("enabled", False)),
         ("dry_run", trade_exec.get("dry_run", True)),
-        ("default_order_quantity", trade_exec.get("default_order_quantity")),
-        ("time_in_force", trade_exec.get("time_in_force")),
     ]
+
+    prompt_rows = []
+    for name, exists in check_prompts():
+        prompt_rows.append((name, "ok" if exists else "missing"))
 
     print("TradingAgents preflight")
     print("=======================")
@@ -88,6 +95,7 @@ def run() -> int:
     _print_block("Alpaca MCP config", alpaca_rows)
     _print_block("Filesystem", fs_rows)
     _print_block("Trade execution", exec_rows)
+    _print_block("Prompts", prompt_rows)
 
     warnings: List[str] = []
     if not _check_env("OPENAI_API_KEY")[0]:

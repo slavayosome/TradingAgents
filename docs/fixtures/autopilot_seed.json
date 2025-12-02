@@ -175,33 +175,119 @@
     "NVDA": [
       {
         "timestamp": "2025-11-13T14:55:00Z",
-        "action": "HOLD",
-        "priority": 0.6,
-        "notes": "Holding 10 shares; trimming plan above 195.",
-        "plan_actions": [
-          "monitor intraday price",
-          "trim above 195"
+        "ticker": "NVDA",
+        "position": {
+          "quantity": 10,
+          "avg_cost": 180.5,
+          "last_price": 192.1,
+          "unrealized_pl_pct": 0.064
+        },
+        "market_snapshot": {
+          "as_of": "2025-11-13T14:50:00Z",
+          "volatility_regime": "elevated",
+          "sentiment": "neutral",
+          "day_trades_remaining": 3,
+          "market_open": true
+        },
+        "strategy": {
+          "name": "swing",
+          "horizon_hours": 72,
+          "target_pct": 0.04,
+          "stop_pct": 0.02,
+          "follow_up": "reassess_every_close",
+          "urgency": "medium",
+          "deadline": "2025-11-16T15:30:00Z",
+          "success_metric": "Gain at least +4.0% within 72h",
+          "failure_metric": "Drawdown beyond -2.0% or catalyst fades"
+        },
+        "derived_levels": {
+          "target_price": 199.9,
+          "stop_price": 188.3
+        },
+        "thesis": {
+          "rationale": "Holding 10 shares; trimming plan above 195.",
+          "confidence": 0.6
+        },
+        "triggers": [
+          {
+            "id": "trig-1",
+            "type": "take_profit",
+            "description": "Trim if price >= 195",
+            "condition": { "source": "price", "operator": ">=", "value": 195 },
+            "action": { "mode": "trim" },
+            "status": "pending"
+          }
         ],
-        "raw": {
-          "ticker": "NVDA",
-          "action": "HOLD"
-        }
+        "current_decision": {
+          "action": "HOLD",
+          "reason": "Maintain swing; trim if target hits",
+          "valid_until": "2025-11-16T15:30:00Z",
+          "confidence": 0.6
+        },
+        "next_plan": {
+          "steps": [
+            { "id": "step-1", "description": "Monitor intraday price for >= 195 to trim 5 shares", "status": "pending" }
+          ]
+        },
+        "schema_version": "v1"
       }
     ],
     "AAPL": [
       {
         "timestamp": "2025-11-13T14:58:00Z",
-        "action": "WATCH",
-        "priority": 0.45,
-        "notes": "Waiting for breakout before adding.",
-        "plan_actions": [
-          "monitor breakout",
-          "ladder entries"
+        "ticker": "AAPL",
+        "position": {
+          "quantity": 0
+        },
+        "market_snapshot": {
+          "as_of": "2025-11-13T14:50:00Z",
+          "volatility_regime": "normal",
+          "sentiment": "watch",
+          "day_trades_remaining": 3,
+          "market_open": true
+        },
+        "strategy": {
+          "name": "swing",
+          "horizon_hours": 72,
+          "target_pct": 0.05,
+          "stop_pct": 0.025,
+          "follow_up": "reassess_every_close",
+          "urgency": "medium",
+          "deadline": "2025-11-16T15:31:00Z",
+          "success_metric": "Breakout extends +5% within horizon",
+          "failure_metric": "Breakout fails or drawdown exceeds -2.5%"
+        },
+        "derived_levels": {
+          "target_price": 178.0,
+          "stop_price": 173.6
+        },
+        "thesis": {
+          "rationale": "Waiting for breakout before adding.",
+          "confidence": 0.45
+        },
+        "triggers": [
+          {
+            "id": "trig-1",
+            "type": "custom",
+            "description": "price >= 178",
+            "condition": { "source": "price", "operator": ">=", "value": 178 },
+            "action": { "mode": "enter" },
+            "status": "pending"
+          }
         ],
-        "raw": {
-          "ticker": "AAPL",
-          "action": "WATCH"
-        }
+        "current_decision": {
+          "action": "WATCH",
+          "reason": "Breakout setup; wait for confirmation.",
+          "valid_until": "2025-11-16T15:31:00Z",
+          "confidence": 0.45
+        },
+        "next_plan": {
+          "steps": [
+            { "id": "step-1", "description": "Monitor price >= 178 breakout", "status": "pending" },
+            { "id": "step-2", "description": "Watch news sentiment for surprises", "status": "pending" }
+          ]
+        },
+        "schema_version": "v1"
       }
     ]
   }

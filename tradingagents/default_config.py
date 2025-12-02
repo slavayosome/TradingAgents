@@ -80,8 +80,6 @@ DEFAULT_CONFIG = {
     "trade_execution": {
         "enabled": os.getenv("TRADE_EXECUTION_ENABLED", "false").lower() not in ("false", "0", "no"),
         "dry_run": os.getenv("TRADE_EXECUTION_DRY_RUN", "true").lower() not in ("false", "0", "no"),
-        "default_order_quantity": float(os.getenv("TRADE_EXECUTION_DEFAULT_QTY", "10")),
-        "time_in_force": os.getenv("TRADE_EXECUTION_TIF", "day"),
     },
     "market_data": {
         "api_key": os.getenv("APCA_API_KEY_ID", ""),
@@ -145,6 +143,8 @@ DEFAULT_CONFIG = {
         "memory": {
             "enabled": os.getenv("AUTO_TRADE_MEMORY_ENABLED", "true").lower() not in ("false", "0", "no"),
             "dir": os.getenv("AUTO_TRADE_MEMORY_DIR", os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "memory")),
+            "schema_version": os.getenv("AUTO_TRADE_MEMORY_SCHEMA_VERSION", "v1"),
+            "validation_mode": os.getenv("AUTO_TRADE_MEMORY_VALIDATION", "warn"),
             "max_entries": int(os.getenv("AUTO_TRADE_MEMORY_MAX_ENTRIES", "5")),
         },
     },

@@ -9,6 +9,7 @@ import logging
 
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
+from tradingagents.prompt_registry import prompt_defaults, prompt_text
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.services.account import AccountSnapshot
@@ -203,7 +204,8 @@ class TradingToolbox:
                 name="submit_trade_order",
                 description=(
                     "Submit a trade directive (BUY/SELL/HOLD) for a ticker with optional sizing. Honors dry-run and market-open checks. "
-                    "Provide quantity in shares when you can; otherwise pass notional and a reference price to convert."
+                    "Provide quantity in shares when you can; otherwise pass notional and a reference price to convert. "
+                    "You must supply time_in_force (one of DAY, GTC, FOK, IOC, OPG, CLS) based on the scenario."
                 ),
                 schema={
                     "type": "object",
@@ -222,9 +224,14 @@ class TradingToolbox:
                             "type": "number",
                             "description": "Price used to convert notional to shares; use your latest fetch_market_data/fetch_indicators price.",
                         },
+                        "time_in_force": {
+                            "type": "string",
+                            "description": "Order time in force (one of DAY, GTC, FOK, IOC, OPG, CLS). Decide per scenario.",
+                            "enum": ["DAY", "GTC", "FOK", "IOC", "OPG", "CLS"],
+                        },
                         "notes": {"type": "string"},
                     },
-                    "required": ["symbol", "action"],
+                    "required": ["symbol", "action", "time_in_force"],
                     "additionalProperties": False,
                 },
                 handler=self._tool_submit_trade,
@@ -328,6 +335,11 @@ class TradingToolbox:
         quantity = args.get("quantity")
         notional = args.get("notional")
         reference_price = args.get("reference_price")
+        time_in_force = str(args.get("time_in_force") or "").upper()
+        if not time_in_force:
+            return {"status": "error", "reason": "missing_time_in_force"}
+        if time_in_force not in self._ALLOWED_TIFS:
+            return {"status": "error", "reason": f"invalid_time_in_force:{time_in_force}"}
         status = self.graph.check_market_status()
         market_open = bool(status.get("is_open", True))
         if not market_open:
@@ -341,6 +353,7 @@ class TradingToolbox:
             quantity=quantity,
             notional=notional,
             reference_price=reference_price,
+            time_in_force=time_in_force,
         )
         return {"status": result.get("status"), "response": result}
 
@@ -357,8 +370,8 @@ class TradingToolbox:
             return {"entries": []}
         symbol = str(args.get("symbol") or "").upper()
         limit = int(args.get("limit") or self.memory_store.max_entries)
-        entries = self.memory_store.load(symbol, limit)
-        return {"symbol": symbol, "entries": entries}
+        entries = self.memory_store.load_structured(symbol, limit)
+        return {"symbol": symbol, "schema_version": self._MEMORY_SCHEMA_VERSION, "entries": entries}
 
     def _init_agent_runners(self) -> Dict[str, Any]:
         try:
@@ -424,6 +437,9 @@ class TradingToolbox:
 class ResponsesAutoTradeService:
     """Auto-trade orchestration powered by the OpenAI Responses API."""
 
+    _PROMPT_NAME = "responses_auto_trade"
+    _MEMORY_SCHEMA_VERSION = "v1"
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -445,7 +461,15 @@ class ResponsesAutoTradeService:
             os.path.join(self.config.get("results_dir", "./results"), "memory"),
         )
         max_entries = int(memory_cfg.get("max_entries", 5))
-        self.memory_store = TickerMemoryStore(memory_dir, max_entries=max_entries, enabled=memory_enabled)
+        schema_version = str(memory_cfg.get("schema_version", "v1"))
+        validation_mode = str(memory_cfg.get("validation_mode", "warn"))
+        self.memory_store = TickerMemoryStore(
+            memory_dir,
+            max_entries=max_entries,
+            enabled=memory_enabled,
+            schema_version=schema_version,
+            validation_mode=validation_mode,
+        )
         self._strategy_brief_cache = self._strategy_presets_brief()
         auto_trade_cfg = self.config.get("auto_trade", {}) or {}
         self.trade_tool_enabled = bool(auto_trade_cfg.get("responses_enable_trade_tool"))
@@ -460,6 +484,7 @@ class ResponsesAutoTradeService:
             "na",
             "not_applicable",
         }
+        self._prompt_defaults = prompt_defaults(self._PROMPT_NAME)
 
     def run(self, snapshot: AccountSnapshot, *, focus_override: Optional[List[str]] = None) -> AutoTradeResult:
         self._reference_prices = _snapshot_reference_prices(snapshot)
@@ -490,7 +515,7 @@ class ResponsesAutoTradeService:
         if self.memory_store and self.memory_store.is_enabled():
             memory_payload = {}
             for ticker in focus_tickers:
-                entries = self.memory_store.load(ticker, limit=3)
+                entries = self.memory_store.load_structured(ticker, limit=3)
                 if entries:
                     memory_payload[ticker] = entries
             if memory_payload:
@@ -500,6 +525,7 @@ class ResponsesAutoTradeService:
                         "content": json.dumps(
                             {
                                 "memory_hint": "Historical decisions per ticker. Use get_ticker_memory if deeper detail needed.",
+                                "schema_version": self._MEMORY_SCHEMA_VERSION,
                                 "entries": memory_payload,
                             }
                         ),
@@ -655,14 +681,7 @@ class ResponsesAutoTradeService:
         if guard_info.get("needs_followup") and guard_info.get("reason"):
             raw_state.setdefault("skip_reason", guard_info.get("reason"))
         if self.memory_store and self.memory_store.is_enabled() and decisions:
-            payload: List[Dict[str, Any]] = []
-            for decision in decisions:
-                decision_dict = decision.to_dict()
-                decision_dict["action"] = decision.final_decision or decision.immediate_action
-                decision_dict["notes"] = decision.final_notes or decision_dict.get("final_notes") or ""
-                decision_dict["priority"] = decision.priority
-                payload.append(decision_dict)
-            self.memory_store.record_decisions(payload)
+            self._persist_structured_memory(decisions, snapshot)
         self._auto_execute_trades(
             decisions,
             submitted_trades,
@@ -697,7 +716,7 @@ class ResponsesAutoTradeService:
         reasoning_config = self.config.get("auto_trade", {}).get("responses_reasoning_effort", "")
         reasoning_text = (reasoning_config or "").strip()
         if not reasoning_text:
-            reasoning_text = "medium"
+            reasoning_text = str(self._prompt_defaults.get("reasoning_effort") or "medium")
         reasoning_enabled = reasoning_text and reasoning_text.lower() not in {"none", "off"}
         remaining_turns = max_turns or int(self.config.get("auto_trade", {}).get("responses_max_turns") or 8)
 
@@ -707,11 +726,23 @@ class ResponsesAutoTradeService:
         repeat_guard: Dict[str, int] = {}
         narration_reminder_issued = False
 
+        auto_cfg = self.config.get("auto_trade", {}) or {}
+        temperature = auto_cfg.get("responses_temperature")
+        top_p = auto_cfg.get("responses_top_p")
+        if temperature is None:
+            temperature = self._prompt_defaults.get("temperature")
+        if top_p is None:
+            top_p = self._prompt_defaults.get("top_p")
+
         request_meta: Dict[str, Any] = {
             "model": model,
             "reasoning": reasoning_text,
             "max_turns": max_turns,
             "allow_tools": allow_tools,
+            "temperature": temperature,
+            "top_p": top_p,
+            "prompt_defaults": self._prompt_defaults,
+            "allowed_time_in_force": list(self._ALLOWED_TIFS),
         }
 
         while remaining_turns > 0:
@@ -724,6 +755,10 @@ class ResponsesAutoTradeService:
                 request_kwargs["tools"] = toolbox.specs
             if reasoning_enabled:
                 request_kwargs["reasoning"] = {"effort": reasoning_text}
+            if temperature is not None:
+                request_kwargs["temperature"] = temperature
+            if top_p is not None:
+                request_kwargs["top_p"] = top_p
 
             tool_call: Optional[Dict[str, Any]] = None
             final_response: Any = None
@@ -886,6 +921,104 @@ class ResponsesAutoTradeService:
             derived.append(f"price <= {failure_price:.2f}")
         return base_triggers + derived
 
+    def _persist_structured_memory(self, decisions: List[TickerDecision], snapshot: AccountSnapshot) -> None:
+        """Persist decisions using the structured memory schema."""
+        for decision in decisions:
+            entry = self._build_memory_entry(decision, snapshot)
+            ok, error = self.memory_store.append_structured(decision.ticker, entry)
+            if not ok and self.logger:
+                self.logger.warning("Memory validation failed for %s: %s", decision.ticker, error)
+
+    def _build_memory_entry(self, decision: TickerDecision, snapshot: AccountSnapshot) -> Dict[str, Any]:
+        """Map a TickerDecision into the unified memory schema."""
+        decision_dict = decision.to_dict()
+        strategy = decision.strategy.to_dict() if decision.strategy else {}
+        seq_plan = decision.sequential_plan.actions if decision.sequential_plan else []
+        plan_steps = [
+            {"id": f"step-{idx+1}", "description": str(action), "status": "pending"}
+            for idx, action in enumerate(seq_plan)
+        ]
+        # Map action_queue into structured triggers (minimal schema-compliant form)
+        triggers: List[Dict[str, Any]] = []
+        for idx, raw in enumerate(decision_dict.get("action_queue") or []):
+            triggers.append(
+                {
+                    "id": f"trig-{idx+1}",
+                    "type": "custom",
+                    "description": str(raw),
+                    "condition": {"source": "text", "operator": "n/a", "value": str(raw)},
+                    "action": {"mode": "note"},
+                    "status": "pending",
+                }
+            )
+        # Build position snapshot if available
+        position_snapshot = self._position_snapshot(decision.ticker, snapshot) or {}
+        current_decision = {
+            "action": decision.final_decision or decision.immediate_action,
+            "reason": decision.final_notes or decision_dict.get("final_notes") or decision_dict.get("notes") or "",
+            "valid_until": strategy.get("deadline"),
+            "confidence": decision.priority,
+        }
+        thesis = {
+            "rationale": decision_dict.get("hypothesis", {}).get("rationale", ""),
+            "confidence": decision.priority,
+        }
+        memory_entry: Dict[str, Any] = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "ticker": decision.ticker,
+            "position": position_snapshot,
+            "market_snapshot": {},
+            "strategy": {
+                "name": strategy.get("name"),
+                "horizon_hours": strategy.get("horizon_hours"),
+                "target_pct": strategy.get("target_pct"),
+                "stop_pct": strategy.get("stop_pct"),
+                "follow_up": strategy.get("follow_up"),
+                "urgency": strategy.get("urgency"),
+                "deadline": strategy.get("deadline"),
+                "success_metric": strategy.get("success_metric"),
+                "failure_metric": strategy.get("failure_metric"),
+            },
+            "derived_levels": {
+                "target_price": strategy.get("success_price"),
+                "stop_price": strategy.get("failure_price"),
+            },
+            "thesis": thesis,
+            "triggers": triggers,
+            "current_decision": current_decision,
+            "next_plan": {"steps": plan_steps},
+            "schema_version": self._MEMORY_SCHEMA_VERSION,
+        }
+        return memory_entry
+
+    def _position_snapshot(self, ticker: str, snapshot: AccountSnapshot) -> Dict[str, Any]:
+        """Extract lightweight position info for the ticker from the account snapshot."""
+        for position in snapshot.positions:
+            symbol = str(position.get("symbol") or position.get("symbol:") or "").upper()
+            if symbol != ticker.upper():
+                continue
+            payload: Dict[str, Any] = {}
+            for key, target in [
+                ("qty", "quantity"),
+                ("quantity", "quantity"),
+                ("current_price", "last_price"),
+                ("price", "last_price"),
+                ("avg_entry_price", "avg_cost"),
+                ("average_entry_price", "avg_cost"),
+                ("market_value", "market_value"),
+                ("unrealized_pl", "unrealized_pl"),
+                ("unrealized_plpc", "unrealized_pl_pct"),
+                ("realized_pl", "realized_pl"),
+                ("currency", "currency"),
+            ]:
+                if key in position:
+                    try:
+                        payload[target] = float(str(position[key]).replace("$", ""))
+                    except Exception:
+                        payload[target] = position[key]
+            return payload
+        return {}
+
     def _plan_guard(self, summary: Dict[str, Any]) -> Dict[str, Any]:
         decisions = summary.get("decisions") or []
         details: List[Dict[str, Any]] = []
@@ -1042,41 +1175,15 @@ class ResponsesAutoTradeService:
             else "Do not call `submit_trade_order`; once your plan summary shows every step resolved, the autopilot "
             "will handle trade submission automatically."
         )
-        return (
-            "You are the trading orchestrator for TradingAgents. Every run must begin by calling "
-            "`get_account_overview` exactly once (unless you explicitly refresh the Alpaca snapshot) and narrating the "
-            "current buying power, cash, open positions, and any recent orders. Reuse that overview for the remainder of "
-            "the run; do not call `get_account_overview` again until you intentionally refresh the snapshot.\n\n"
-            "With that snapshot, immediately synthesize or update a trading hypothesis for each focus ticker using the "
-            "account data, existing positions, buying power, cash, recent orders, and stored memory. Decide whether the "
-            "current hypothesis already justifies HOLD/BUY/SELL before touching high-latency tools. Only call "
-            "heavy-weight analysts or vendor data feeds when the hypothesis requires fresh evidence (e.g., preparing a "
-            "trade, validating a catalyst, or detecting a change since the last run). If the prior plan still applies, "
-            "log that decision and proceed without re-running every analyst.\n\n"
-            "When deeper context is required, call `get_ticker_memory`, then use `fetch_market_data`, "
-            "`fetch_indicators`, and `fetch_company_news` (plus `fetch_global_news` when macro context matters) before "
-            "invoking the specialist analysts (`run_market_analyst`, `run_news_analyst`, `run_fundamentals_analyst`). "
-            "For any ticker that lacks stored memory or an active position, you must at minimum gather the last 7 days of "
-            "market data and the latest company news before finalizing your hypothesis so you remain curious and well-grounded.\n\n"
-            "Every recommendation must map to a named strategy (e.g., day_trade, swing, position) taken from the provided presets. "
-            "For each ticker, specify a measurable `strategy` object containing `name`, `horizon_hours`, `target_pct`, `stop_pct`, "
-            "`success_metric`, `failure_metric`, `follow_up`, `urgency`, and an ISO8601 `deadline` that defines when the plan is reevaluated. "
-            "Customize the preset parameters only when the evidence demands it, and ensure the success/failure metrics describe the exact "
-            "conditions that complete or cancel the hypothesis so automation can act on them.\n\n"
-            "Narrate every step before you make the tool call so the CLI can display your thinking live, and summarize what "
-            "you learned from each tool. Be curious: when a ticker’s context is thin, proactively explore the smallest set "
-            "of tools needed to form a defendable hypothesis rather than defaulting to HOLD. Maintain an explicit plan tracker: list "
-            "each planned action (e.g., ‘Step 1 – Fetch TSLA market data’) along with its status (`pending`, `in_progress`, `done`), "
-            "and after every tool call, announce which step changed status and why. Consider market-open status before "
-            "trading, respect trade execution limits (but treat `day_trades_remaining` as informational—you may still "
-            "recommend buys/sells), and keep narration concise but informative. Before the final summary, resolve every "
-            "`plan_status` entry: either run the scheduled step or explicitly mark it as `skipped` with a short reason so "
-            "no action remains `pending`.\n\n"
-            "Conclude with a JSON summary containing decisions for each ticker. The final assistant message must include a "
-            "JSON object with a `decisions` array where each entry specifies `ticker`, `action`, `priority`, "
-            "`plan_actions`, `next_decision`, `notes`, `plan_status` (a mapping of each plan action to its status), the `strategy` object described above, "
-            "and optional `action_queue` and `execution_plan` fields. "
-            f"{trade_clause}"
+        prompt = prompt_text(self._PROMPT_NAME)
+        if not prompt:
+            raise RuntimeError(
+                f"Missing prompt configuration for {self._PROMPT_NAME}. "
+                "Ensure prompts/responses_auto_trade.json exists with system_prompt text."
+            )
+        return prompt.replace(
+            "After producing the JSON, call `submit_trade_order` for every ticker whose action is BUY or SELL (subject to trade execution settings).",
+            trade_clause,
         )
 
     def _safe_json(self, raw: str) -> Dict[str, Any]:

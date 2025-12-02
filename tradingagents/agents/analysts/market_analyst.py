@@ -5,9 +5,11 @@ from tradingagents.agents.utils.tool_runner import (
     extract_text_from_content,
     run_chain_with_tools,
 )
+from tradingagents.prompt_registry import prompt_text
 
 
 def create_market_analyst(llm):
+    prompt_name = "market_analyst"
 
     def market_analyst_node(state):
         scheduled_list = state.get("scheduled_analysts", []) or []
@@ -33,8 +35,17 @@ def create_market_analyst(llm):
             get_indicators,
         ]
 
+        system_message = prompt_text(prompt_name)
+        if not system_message:
+            raise RuntimeError(
+                f"Missing prompt configuration for {prompt_name}. "
+                "Ensure prompts/market_analyst.json exists with system_prompt text."
+            )
         system_message = (
-            """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
+            system_message
+            if system_message.endswith(".")
+            else system_message
+        )
 
 Moving Averages:
 - close_50_sma: 50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.
@@ -59,7 +70,7 @@ Volume-Based Indicators:
 - vwma: VWMA: A moving average weighted by volume. Usage: Confirm trends by integrating price action with volume data. Tips: Watch for skewed results from volume spikes; use in combination with other volume analyses.
 
 - Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names. Write a very detailed and nuanced report of the trends you observe. Do not simply state the trends are mixed, provide detailed and finegrained analysis and insights that may help traders make decisions."""
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read.""",
         )
 
         prompt = ChatPromptTemplate.from_messages(

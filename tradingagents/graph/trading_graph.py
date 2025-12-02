@@ -495,6 +495,7 @@ class TradingAgentsGraph:
         quantity: Optional[float] = None,
         notional: Optional[float] = None,
         reference_price: Optional[float] = None,
+        time_in_force: Optional[str] = None,
     ) -> Dict[str, Any]:
         exec_cfg = self.trade_execution_config or {}
         if not exec_cfg.get("enabled"):
@@ -530,9 +531,6 @@ class TradingAgentsGraph:
                 computed = int(notional_value // ref_price_value)
                 resolved_qty = float(computed) if computed > 0 else None
 
-        if resolved_qty is None:
-            resolved_qty = _as_quantity(exec_cfg.get("default_order_quantity", 0))
-
         if not ref_price_value and resolved_qty and ref_price_value is None:
             # Best effort: try to recover reference price from hypothesis/trader notes if present
             ref_price_value = _as_quantity(final_state.get("reference_price")) if isinstance(final_state, dict) else None
@@ -563,6 +561,12 @@ class TradingAgentsGraph:
         if resolved_qty is None or resolved_qty <= 0:
             return {"status": "skipped", "reason": "invalid_quantity"}
 
+        allowed_tifs = {"DAY", "GTC", "FOK", "IOC", "OPG", "CLS"}
+        if not time_in_force:
+            return {"status": "skipped", "reason": "missing_time_in_force"}
+        if str(time_in_force).upper() not in allowed_tifs:
+            return {"status": "skipped", "reason": f"invalid_time_in_force:{time_in_force}"}
+
         client = self._get_alpaca_client()
         if client is None:
             return {"status": "failed", "reason": "alpaca_disabled"}
@@ -571,7 +575,7 @@ class TradingAgentsGraph:
             "symbol": symbol,
             "side": "buy" if action == "BUY" else "sell",
             "order_type": "market",
-            "time_in_force": exec_cfg.get("time_in_force", "day").upper(),
+            "time_in_force": str(time_in_force).upper(),
             "quantity": float(resolved_qty),
         }
 
@@ -726,7 +730,11 @@ class TradingAgentsGraph:
             processed_decision = self.process_signal(decision_text)
         else:
             processed_decision = ""
-        execution_result = self._maybe_execute_trade(final_state, decision_text)
+        execution_result = self._maybe_execute_trade(
+            final_state,
+            decision_text,
+            time_in_force=final_state.get("time_in_force"),
+        )
         processed_result = {
             "decision": processed_decision,
             "execution": execution_result,
@@ -743,6 +751,7 @@ class TradingAgentsGraph:
         quantity: Optional[float] = None,
         notional: Optional[float] = None,
         reference_price: Optional[float] = None,
+        time_in_force: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Execute a trade directive issued outside the standard graph run."""
         directive = (action or "").strip().upper()
@@ -753,6 +762,7 @@ class TradingAgentsGraph:
             quantity=quantity,
             notional=notional,
             reference_price=reference_price,
+            time_in_force=time_in_force,
         )
 
     def _log_state(self, trade_date, final_state):

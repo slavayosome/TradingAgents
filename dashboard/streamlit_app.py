@@ -323,40 +323,36 @@ def render_account(latest_run: Optional[Dict[str, Any]], live: Dict[str, Any]):
         st.caption(f"Source: latest run ({fetched})")
 
 
-def render_decisions(run: Dict[str, Any]):
-    st.subheader("Decisions")
-    decisions = run.get("decisions", [])
-    if not decisions:
-        st.info("No decisions yet.")
+def render_decisions_from_memory(tickers: List[str]):
+    st.subheader("Decisions (from memory)")
+    mem = load_memory_entries(tickers, limit=1)
+    if not mem:
+        st.info("No memory entries yet.")
         return
     rows = []
-    for d in decisions:
+    for ticker, entries in mem.items():
+        latest = entries[0] if entries else {}
+        strat = latest.get("strategy") or {}
+        current = latest.get("current_decision") or {}
         rows.append(
             {
-                "Ticker": d.get("ticker"),
-                "Action": (d.get("final_decision") or d.get("immediate_action") or "hold").upper(),
-                "Priority": d.get("priority"),
-                "Strategy": (d.get("strategy") or {}).get("name"),
-                "Target %": (d.get("strategy") or {}).get("target_pct"),
-                "Stop %": (d.get("strategy") or {}).get("stop_pct"),
+                "Ticker": ticker,
+                "Action": (current.get("action") or "").upper(),
+                "Priority": current.get("confidence"),
+                "Strategy": strat.get("name"),
+                "Target %": strat.get("target_pct"),
+                "Stop %": strat.get("stop_pct"),
+                "Valid Until": current.get("valid_until"),
             }
         )
     st.dataframe(rows, use_container_width=True)
 
-    st.subheader("Decision Details")
-    for d in decisions:
-        ticker = d.get("ticker") or "?"
-        action = (d.get("final_decision") or d.get("immediate_action") or "hold").upper()
+    st.subheader("Decision Details (latest per ticker)")
+    for ticker, entries in mem.items():
+        latest = entries[0] if entries else {}
+        action = (latest.get("current_decision") or {}).get("action", "") or "?"
         with st.expander(f"{ticker} – {action}"):
-            st.write("Strategy:", d.get("strategy"))
-            st.write("Priority:", d.get("priority"))
-            st.write("Trader Plan:", d.get("trader_plan"))
-            st.write("Final Notes:", d.get("final_notes") or "<none>")
-            sp = d.get("sequential_plan") or {}
-            st.write("Plan Actions:", sp.get("actions"))
-            st.write("Plan Next:", sp.get("next_decision"))
-            st.write("Reasoning:", sp.get("reasoning"))
-            st.write("Action Queue:", d.get("action_queue"))
+            _render_memory_entry(latest)
 
 
 def render_hypotheses(records: List[Dict[str, Any]]):
@@ -422,7 +418,7 @@ def render_llm_trace(latest_run: Optional[Dict[str, Any]]):
 
 
 def load_memory_entries(tickers: Optional[List[str]] = None, limit: int = 5) -> Dict[str, List[Dict[str, Any]]]:
-    """Read latest memory entries per ticker from memory dir."""
+    """Read latest memory entries per ticker from memory dir (new structured schema)."""
     entries: Dict[str, List[Dict[str, Any]]] = {}
     if not MEMORY_DIR.exists():
         return entries
@@ -434,10 +430,40 @@ def load_memory_entries(tickers: Optional[List[str]] = None, limit: int = 5) -> 
         try:
             data = json.loads(file.read_text())
             if isinstance(data, list):
-                entries[ticker] = list(reversed(data))[:limit]  # newest first
+                filtered = [item for item in data if isinstance(item, dict)]
+                entries[ticker] = list(reversed(filtered))[:limit]  # newest first
         except Exception:
             continue
     return entries
+
+
+def _render_memory_entry(entry: Dict[str, Any]) -> None:
+    st.markdown(f"**Timestamp:** {entry.get('timestamp', '')}")
+    st.markdown(f"**Decision:** {entry.get('current_decision', {}).get('action', '')} | Valid until: {entry.get('current_decision', {}).get('valid_until', '')}")
+    strategy = entry.get("strategy") or {}
+    st.markdown(
+        f"**Strategy:** {strategy.get('name', '')} | target_pct={strategy.get('target_pct')} | stop_pct={strategy.get('stop_pct')} | horizon_hours={strategy.get('horizon_hours')}"
+    )
+    pos = entry.get("position") or {}
+    st.markdown(
+        f"**Position:** qty={pos.get('quantity')} avg_cost={pos.get('avg_cost')} last_price={pos.get('last_price')} uPL%={pos.get('unrealized_pl_pct')}"
+    )
+    thesis = entry.get("thesis") or {}
+    if thesis.get("rationale"):
+        st.markdown("**Thesis:**")
+        st.code(thesis.get("rationale"), language="text")
+    triggers = entry.get("triggers") or []
+    if triggers:
+        st.markdown("**Triggers:**")
+        for trig in triggers:
+            st.write(
+                f"- [{trig.get('status','')}] {trig.get('type','')}: {trig.get('description','') or trig.get('condition','')}"
+            )
+    next_plan = (entry.get("next_plan") or {}).get("steps") or []
+    if next_plan:
+        st.markdown("**Next Plan:**")
+        for step in next_plan:
+            st.write(f"- [{step.get('status','')}] {step.get('description','')}")
 
 
 def render_memory(tickers: List[str]):
@@ -449,7 +475,9 @@ def render_memory(tickers: List[str]):
         return
     for ticker, items in mem.items():
         with st.expander(f"{ticker} ({len(items)} entries)", expanded=False):
-            st.json(items, expanded=False)
+            for entry in items:
+                _render_memory_entry(entry)
+                st.divider()
 
 
 def main():
@@ -470,8 +498,9 @@ def main():
     render_llm_trace(latest)
     focus = []
     if latest:
-        focus = latest.get("focus_tickers") or [d.get("ticker") for d in latest.get("decisions", []) if d.get("ticker")]
+        focus = latest.get("focus_tickers") or []
     tickers = st.multiselect("Memory tickers", options=sorted(set(focus or load_memory_entries().keys())), default=focus or None)
+    render_decisions_from_memory(tickers or focus or [])
     render_memory(tickers or focus or [])
     render_hypotheses(load_hypotheses())
 
