@@ -1559,6 +1559,22 @@ if not hasattr(ResponsesAutoTradeService, "_build_system_prompt"):
 
     ResponsesAutoTradeService._build_system_prompt = _fallback_build_system_prompt  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _extract_reasoning_traces exists
+if not hasattr(ResponsesAutoTradeService, "_extract_reasoning_traces"):
+    def _fallback_extract_reasoning_traces(self, response: Any) -> List[str]:  # type: ignore[method-assign]
+        traces: List[str] = []
+        try:
+            for item in getattr(response, "output", []):
+                if getattr(item, "type", "") == "reasoning":
+                    txt = getattr(item, "content", None) or ""
+                    if isinstance(txt, str) and txt:
+                        traces.append(txt)
+        except Exception:
+            return []
+        return traces
+
+    ResponsesAutoTradeService._extract_reasoning_traces = _fallback_extract_reasoning_traces  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
