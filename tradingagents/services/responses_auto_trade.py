@@ -1614,6 +1614,24 @@ if not hasattr(ResponsesAutoTradeService, "_emit_tool_event"):
             pass
     ResponsesAutoTradeService._emit_tool_event = _fallback_emit_tool_event  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _extract_tool_calls exists
+if not hasattr(ResponsesAutoTradeService, "_extract_tool_calls"):
+    def _fallback_extract_tool_calls(self, response: Any) -> List[Dict[str, Any]]:  # type: ignore[method-assign]
+        calls: List[Dict[str, Any]] = []
+        try:
+            output_items = getattr(response, "output", []) or []
+            for item in output_items:
+                if getattr(item, "type", None) != "function_call":
+                    continue
+                call_id = getattr(item, "id", None) or getattr(item, "call_id", None)
+                arguments = getattr(item, "arguments", "") or ""
+                calls.append({"id": call_id, "name": getattr(item, "name", ""), "arguments": arguments})
+        except Exception:
+            return []
+        return calls
+
+    ResponsesAutoTradeService._extract_tool_calls = _fallback_extract_tool_calls  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
