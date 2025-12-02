@@ -1513,6 +1513,29 @@ def _snapshot_reference_prices(snapshot: AccountSnapshot) -> Dict[str, float]:
             mapping[symbol] = value
     return mapping
 
+# Defensive patch: ensure ResponsesAutoTradeService always has _strategy_presets_brief
+# even if older bytecode is loaded or indentation parsing is inconsistent in deployment.
+if not hasattr(ResponsesAutoTradeService, "_strategy_presets_brief"):
+    def _fallback_strategy_presets_brief(self) -> Dict[str, Any]:  # type: ignore[method-assign]
+        cfg = self.config.get("trading_strategies", {}) or {}
+        presets = cfg.get("presets", {}) or {}
+        entries: List[Dict[str, Any]] = []
+        for name, data in presets.items():
+            entries.append(
+                {
+                    "name": name,
+                    "label": data.get("label"),
+                    "horizon_hours": data.get("horizon_hours"),
+                    "target_pct": data.get("target_pct"),
+                    "stop_pct": data.get("stop_pct"),
+                    "follow_up": data.get("follow_up"),
+                    "urgency": data.get("urgency"),
+                }
+            )
+        return {"default": cfg.get("default", "swing"), "presets": entries}
+
+    ResponsesAutoTradeService._strategy_presets_brief = _fallback_strategy_presets_brief  # type: ignore[attr-defined]
+
 
 def _coerce_priority(value: Any) -> float:
     """Convert priority/confidence to float; map common strings to numeric."""
