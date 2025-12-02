@@ -32,6 +32,12 @@ MCP_URL = os.getenv("TRADINGAGENTS_MCP_URL", "http://127.0.0.1:8000/mcp")
 CHECK_SERVICES = os.getenv("DASHBOARD_SERVICE_CHECK", "true").lower() not in ("0", "false", "no")
 SSH_CMD = os.getenv("DASHBOARD_SERVICE_SSH", "").strip()
 MODEL_BADGE = os.getenv("AUTO_TRADE_RESPONSES_MODEL") or os.getenv("TRADINGAGENTS_RESPONSES_MODEL") or ""
+MEMORY_DIR = Path(
+    os.getenv(
+        "AUTO_TRADE_MEMORY_DIR",
+        os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "memory"),
+    )
+)
 
 
 def _color_from_status(status: str) -> str:
@@ -64,7 +70,7 @@ def read_json_files(path: Path, prefix: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     if not path.exists():
         return items
-    for file in sorted(path.glob(f"{prefix}*.json")):
+    for file in sorted(path.glob(f"{prefix}*.json"), key=lambda p: p.stat().st_mtime, reverse=False):
         try:
             with file.open("r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -73,6 +79,27 @@ def read_json_files(path: Path, prefix: str) -> List[Dict[str, Any]]:
         except Exception:
             continue
     return items
+
+
+def list_auto_runs() -> List[Dict[str, Any]]:
+    runs: List[Dict[str, Any]] = []
+    if not AUTO_RUN_DIR.exists():
+        return runs
+    for file in sorted(AUTO_RUN_DIR.glob("auto_trade_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(file.read_text())
+            ts = data.get("fetched_at") or data.get("created_at") or ""
+            runs.append(
+                {
+                    "file": str(file),
+                    "data": data,
+                    "mtime": file.stat().st_mtime,
+                    "label": f"{file.name} | fetched_at: {ts}",
+                }
+            )
+        except Exception:
+            continue
+    return runs
 
 
 def load_hypotheses() -> List[Dict[str, Any]]:
@@ -95,6 +122,27 @@ def latest_auto_trade() -> Optional[Dict[str, Any]]:
     if not runs:
         return None
     return runs[-1]
+
+
+def list_auto_runs() -> List[Dict[str, Any]]:
+    runs: List[Dict[str, Any]] = []
+    if not AUTO_RUN_DIR.exists():
+        return runs
+    for file in sorted(AUTO_RUN_DIR.glob("auto_trade_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(file.read_text())
+            ts = data.get("fetched_at") or data.get("created_at") or ""
+            runs.append(
+                {
+                    "file": str(file),
+                    "data": data,
+                    "mtime": file.stat().st_mtime,
+                    "label": f"{file.name} | fetched_at: {ts}",
+                }
+            )
+        except Exception:
+            continue
+    return runs
 
 
 def service_status(name: str) -> str:
@@ -373,10 +421,46 @@ def render_llm_trace(latest_run: Optional[Dict[str, Any]]):
             st.text_area("Raw", _shorten(str(llm_resp), 2000), height=200)
 
 
+def load_memory_entries(tickers: Optional[List[str]] = None, limit: int = 5) -> Dict[str, List[Dict[str, Any]]]:
+    """Read latest memory entries per ticker from memory dir."""
+    entries: Dict[str, List[Dict[str, Any]]] = {}
+    if not MEMORY_DIR.exists():
+        return entries
+    files = MEMORY_DIR.glob("*.json")
+    for file in files:
+        ticker = file.stem.upper()
+        if tickers and ticker not in tickers:
+            continue
+        try:
+            data = json.loads(file.read_text())
+            if isinstance(data, list):
+                entries[ticker] = list(reversed(data))[:limit]  # newest first
+        except Exception:
+            continue
+    return entries
+
+
+def render_memory(tickers: List[str]):
+    st.subheader("Memory")
+    mem = load_memory_entries(tickers)
+    st.caption(f"Memory dir: {MEMORY_DIR}")
+    if not mem:
+        st.info("No memory entries for the selected tickers.")
+        return
+    for ticker, items in mem.items():
+        with st.expander(f"{ticker} ({len(items)} entries)", expanded=False):
+            st.json(items, expanded=False)
+
+
 def main():
     render_status()
     refresh_live = st.button("Refresh Live MCP Account")
-    latest = latest_auto_trade()
+    runs = list_auto_runs()
+    latest = runs[0]["data"] if runs else None
+    if runs:
+        labels = [r["label"] for r in runs]
+        choice = st.selectbox("Select auto-trade run", labels, index=0)
+        latest = next((r["data"] for r in runs if r["label"] == choice), latest)
     live_acc = mcp_account_live() if refresh_live else mcp_account_live()
     render_account(latest, live_acc)
     if latest:
@@ -384,6 +468,11 @@ def main():
     else:
         st.info("No auto-trade runs found yet.")
     render_llm_trace(latest)
+    focus = []
+    if latest:
+        focus = latest.get("focus_tickers") or [d.get("ticker") for d in latest.get("decisions", []) if d.get("ticker")]
+    tickers = st.multiselect("Memory tickers", options=sorted(set(focus or load_memory_entries().keys())), default=focus or None)
+    render_memory(tickers or focus or [])
     render_hypotheses(load_hypotheses())
 
 
