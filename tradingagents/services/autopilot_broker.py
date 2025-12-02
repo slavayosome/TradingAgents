@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Callable, Dict, Iterable, Optional
+from typing import Callable, Dict, Iterable, Optional, Any
 
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.services.autopilot_worker import AutopilotWorker
@@ -33,19 +33,9 @@ class AutopilotBroker:
 
     def parse_triggers(self, record: HypothesisRecord) -> Iterable[PriceThreshold]:
         for trigger in record.triggers:
-            trigger_str = str(trigger).strip().lower()
-            if trigger_str.startswith("price >="):
-                try:
-                    symbol, value = self._parse_simple_trigger(record.ticker, trigger_str, ">=")
-                    yield PriceThreshold(symbol=symbol, operator=">=", value=value)
-                except ValueError:
-                    continue
-            elif trigger_str.startswith("price <="):
-                try:
-                    symbol, value = self._parse_simple_trigger(record.ticker, trigger_str, "<=")
-                    yield PriceThreshold(symbol=symbol, operator="<=", value=value)
-                except ValueError:
-                    continue
+            parsed = self._parse_trigger(record, trigger)
+            if parsed:
+                yield parsed
 
     def poll_once(self) -> Dict[str, str]:
         outcomes: Dict[str, str] = {}
@@ -79,6 +69,33 @@ class AutopilotBroker:
         symbol = left if left else default_symbol.upper()
         value = float(parts[1].strip())
         return symbol, value
+
+    def _parse_trigger(self, record: HypothesisRecord, raw: Any) -> Optional[PriceThreshold]:
+        # structured
+        if isinstance(raw, dict):
+            cond = raw.get("condition") or {}
+            source = str(cond.get("source") or "").lower()
+            if source and source != "price":
+                return None
+            operator = str(cond.get("operator") or "").strip()
+            value = cond.get("value")
+            try:
+                value_f = float(value)
+            except (TypeError, ValueError):
+                return None
+            if operator not in {">=", "<="}:
+                return None
+            symbol = str(raw.get("symbol") or record.ticker).upper()
+            return PriceThreshold(symbol=symbol, operator=operator, value=value_f)
+        # text
+        trigger_str = str(raw).strip().lower()
+        if trigger_str.startswith("price >="):
+            symbol, value = self._parse_simple_trigger(record.ticker, trigger_str, ">=")
+            return PriceThreshold(symbol=symbol, operator=">=", value=value)
+        if trigger_str.startswith("price <="):
+            symbol, value = self._parse_simple_trigger(record.ticker, trigger_str, "<=")
+            return PriceThreshold(symbol=symbol, operator="<=", value=value)
+        return None
 
 
 def default_price_fetcher(symbol: str) -> Optional[float]:
