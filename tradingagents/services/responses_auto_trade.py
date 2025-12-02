@@ -1816,6 +1816,18 @@ if not hasattr(ResponsesAutoTradeService, "_build_memory_entry"):
 
     ResponsesAutoTradeService._build_memory_entry = _fallback_build_memory_entry  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _position_snapshot exists
+if not hasattr(ResponsesAutoTradeService, "_position_snapshot"):
+    def _fallback_position_snapshot(self, ticker: str, snapshot: AccountSnapshot) -> Dict[str, Any]:  # type: ignore[method-assign]
+        if not snapshot or not getattr(snapshot, "positions", None):
+            return {}
+        for pos in snapshot.positions:
+            if str(getattr(pos, "symbol", "")).upper() == str(ticker).upper():
+                return pos.to_dict() if hasattr(pos, "to_dict") else pos.__dict__
+        return {}
+
+    ResponsesAutoTradeService._position_snapshot = _fallback_position_snapshot  # type: ignore[attr-defined]
+
 
 def _log_runtime_introspection() -> None:
     """Optional import-time introspection to detect stale code paths in deployments."""
