@@ -160,7 +160,11 @@ class AutoTradeService:
                 graph=self.graph,
                 logger=self.logger,
             )
-            result = responses_service.run(snapshot, focus_override=focus_override)
+            result = responses_service.run(
+                snapshot,
+                focus_override=focus_override,
+                allow_market_closed=allow_market_closed,
+            )
             if hasattr(self.graph, "clear_manual_portfolio_snapshot"):
                 try:
                     self.graph.clear_manual_portfolio_snapshot()  # type: ignore[attr-defined]

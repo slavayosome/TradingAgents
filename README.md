@@ -195,6 +195,8 @@ Set `AUTO_TRADE_MODE=responses` to let the OpenAI Responses API drive the run. T
 
 To help the LLM build on past context, enable the ticker memory tool (default). After each run the agent stores a structured history of decisions per ticker under `AUTO_TRADE_MEMORY_DIR` (default `./results/memory`). Memory entries follow a unified schema (`tradingagents/memory_schema.json`) with fields for position, market snapshot, strategy, thesis, triggers, current_decision, and next_plan. On the next run it can call `get_ticker_memory` to recap recent actions. Control retention with `AUTO_TRADE_MEMORY_MAX_ENTRIES`.
 
+Auto-trade closed-market control: `AUTO_TRADE_ALLOW_MARKET_CLOSED=true` lets the orchestration run even when the market is closed (seed run included). If `AUTO_TRADE_SKIP_WHEN_MARKET_CLOSED=true`, runs are skipped unless explicitly allowed.
+
 The Responses orchestrator can also call the same research agents that power the LangGraph pipeline via tools (`run_market_analyst`, `run_news_analyst`, `run_fundamentals_analyst`). Encourage this by leaving `AUTO_TRADE_MODE=responses` and the prompt will request those tools before making final trade recommendations.
 
 When the sequential-thinking planner promotes a ticker to `trade` or `escalate`, the CLI highlights the exact reasoning steps (confidence, capital checks, escalation path) so every decision is auditable.

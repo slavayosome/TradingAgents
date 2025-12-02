@@ -574,7 +574,9 @@ def _run_autopilot_loop(
     next_market_check_delay = market_check_interval
 
     if seed_run:
-        if market_is_open:
+        allow_closed = bool(auto_trader.config.get("auto_trade", {}).get("allow_market_closed"))
+        skip_closed = bool(auto_trader.config.get("auto_trade", {}).get("skip_when_market_closed"))
+        if market_is_open or (allow_closed and not skip_closed):
             snap = _refresh_snapshot_if_needed(force=True)
             if snap:
                 ran = _execute_auto_trade(
@@ -583,7 +585,7 @@ def _run_autopilot_loop(
                     hypothesis_store,
                     compact=True,
                     skip_if_market_closed=False,
-                    allow_market_closed=False,
+                    allow_market_closed=allow_closed,
                 )
                 pending_market_open_run = not ran
         else:

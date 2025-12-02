@@ -147,6 +147,7 @@ DEFAULT_CONFIG = {
             "validation_mode": os.getenv("AUTO_TRADE_MEMORY_VALIDATION", "warn"),
             "max_entries": int(os.getenv("AUTO_TRADE_MEMORY_MAX_ENTRIES", "5")),
         },
+        "allow_market_closed": os.getenv("AUTO_TRADE_ALLOW_MARKET_CLOSED", "false").lower() not in ("false", "0", "no"),
     },
     "vendor_logging": {
         "verbose": os.getenv("VENDOR_LOG_VERBOSE", "false").lower() in ("1", "true", "yes", "on")

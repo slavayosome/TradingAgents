@@ -592,6 +592,7 @@ class ResponsesAutoTradeService:
             transcript,
             allow_tools=True,
             submitted_trades=submitted_trades,
+            allow_market_closed=bool(self.config.get("auto_trade", {}).get("allow_market_closed")),
         )
         final_text = self._response_text(response)
         if final_text:
@@ -705,6 +706,7 @@ class ResponsesAutoTradeService:
         max_turns: Optional[int] = None,
         allow_tools: bool = True,
         submitted_trades: Optional[Set[Tuple[str, str]]] = None,
+        allow_market_closed: bool = False,
     ):
         model = (
             self.config.get("auto_trade", {}).get("responses_model")
@@ -845,6 +847,7 @@ class ResponsesAutoTradeService:
             if final_response is None:
                 raise RuntimeError("Streaming response did not complete.")
             request_meta["conversation"] = conversation
+            request_meta["allow_market_closed"] = allow_market_closed
             return final_response, request_meta
 
         raise RuntimeError("Responses conversation exceeded maximum turns without completion.")
