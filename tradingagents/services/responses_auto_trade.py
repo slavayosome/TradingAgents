@@ -984,6 +984,25 @@ class ResponsesAutoTradeService:
         """Convert a memory trigger into a PriceTrigger if price-based."""
         if isinstance(raw, dict):
             condition = raw.get("condition") or {}
+            parsed = self._parse_condition(condition)
+            if not parsed:
+                # condition might be a string
+                parsed = self._parse_condition(condition.get("text") if isinstance(condition, dict) else condition)
+            if not parsed:
+                return None
+            operator, value_f = parsed
+            symbol = str(raw.get("symbol") or default_symbol).upper()
+            return PriceTrigger(hypothesis_id="", symbol=symbol, operator=operator, value=value_f)
+        text = str(raw).strip().lower()
+        parsed = self._parse_condition(text)
+        if parsed:
+            operator, value = parsed
+            return PriceTrigger(hypothesis_id="", symbol=default_symbol.upper(), operator=operator, value=value)
+        return None
+
+    def _parse_condition(self, condition: Any) -> Optional[tuple[str, float]]:
+        """Parse a condition (dict or text) into (operator, value) for price triggers."""
+        if isinstance(condition, dict):
             source = str(condition.get("source") or "").lower()
             if source and source != "price":
                 return None
@@ -995,22 +1014,36 @@ class ResponsesAutoTradeService:
                 return None
             if operator not in {">=", "<="}:
                 return None
-            symbol = str(raw.get("symbol") or default_symbol).upper()
-            return PriceTrigger(hypothesis_id="", symbol=symbol, operator=operator, value=value_f)
-        text = str(raw).strip().lower()
-        if text.startswith("price >="):
-            try:
-                _, value = self._extract_symbol_value(default_symbol, text, ">=")
-                return PriceTrigger(hypothesis_id="", symbol=default_symbol.upper(), operator=">=", value=value)
-            except ValueError:
-                return None
-        if text.startswith("price <="):
-            try:
-                _, value = self._extract_symbol_value(default_symbol, text, "<=")
-                return PriceTrigger(hypothesis_id="", symbol=default_symbol.upper(), operator="<=", value=value)
-            except ValueError:
-                return None
+            return operator, value_f
+        text = str(condition or "").strip().lower()
+        if not text:
+            return None
+        # simple regex-like parsing
+        for op in (">=", "<="):
+            if op in text:
+                try:
+                    _, right = text.split(op, 1)
+                    value_f = float(right.strip().split()[0])
+                    return op, value_f
+                except Exception:
+                    continue
         return None
+
+    def _has_order_details(self, entry: Dict[str, Any]) -> bool:
+        fields = ["quantity", "notional", "reference_price", "time_in_force"]
+        if all(entry.get(f) for f in fields if f != "quantity"):
+            return True
+        exec_plan = entry.get("execution_plan") or {}
+        entry_plan = exec_plan.get("entry") or {}
+        if entry_plan.get("time_in_force") and (entry_plan.get("notional") or entry_plan.get("quantity")):
+            return True
+        for item in entry.get("action_queue") or []:
+            if isinstance(item, dict):
+                tif = item.get("time_in_force")
+                qty = item.get("quantity") or item.get("notional")
+                if tif and qty:
+                    return True
+        return False
 
     def _build_memory_entry(self, decision: TickerDecision, snapshot: AccountSnapshot) -> Dict[str, Any]:
         """Map a TickerDecision into the unified memory schema."""
@@ -1134,6 +1167,10 @@ class ResponsesAutoTradeService:
                     incomplete.append(f"{action} (no status reported)")
             if not triggers:
                 incomplete.append("triggers missing (must include price target/stop and time-based trigger)")
+            # Order guard: BUY/SELL must include size + time_in_force
+            action = str(entry.get("action") or "").upper()
+            if action in {"BUY", "SELL"} and not self._has_order_details(entry):
+                incomplete.append("order sizing/time_in_force missing (provide quantity or notional + reference_price and time_in_force)")
             if incomplete:
                 details.append({"ticker": ticker, "steps": incomplete})
                 action = str(entry.get("action") or "").upper()
