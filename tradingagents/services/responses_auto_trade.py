@@ -869,7 +869,8 @@ class ResponsesAutoTradeService:
             if not ticker:
                 continue
             focus.append(ticker)
-            priority = float(entry.get("priority") or entry.get("confidence") or 0)
+            raw_priority = entry.get("priority") or entry.get("confidence") or 0
+            priority = _coerce_priority(raw_priority)
             action = str(entry.get("action") or entry.get("decision") or "monitor").upper()
             plan_actions = entry.get("plan_actions") or entry.get("actions") or []
             if isinstance(plan_actions, str):
@@ -1260,3 +1261,26 @@ def _snapshot_reference_prices(snapshot: AccountSnapshot) -> Dict[str, float]:
         if value:
             mapping[symbol] = value
     return mapping
+
+
+def _coerce_priority(value: Any) -> float:
+    """Convert priority/confidence to float; map common strings to numeric."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().lower()
+    if not text:
+        return 0.0
+    mapping = {
+        "high": 0.85,
+        "medium": 0.6,
+        "med": 0.6,
+        "low": 0.3,
+    }
+    if text in mapping:
+        return mapping[text]
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
