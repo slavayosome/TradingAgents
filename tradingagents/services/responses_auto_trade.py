@@ -1015,6 +1015,8 @@ class ResponsesAutoTradeService:
             return
         try:
             broker.register_manual_triggers(parsed)
+            if self.logger:
+                self.logger.info("[Realtime Trigger] Registered %s triggers for %s", len(parsed), ticker)
         except Exception:
             if self.logger:
                 self.logger.debug("Failed to register triggers with realtime broker", exc_info=True)

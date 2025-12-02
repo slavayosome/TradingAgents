@@ -49,6 +49,7 @@ class RealtimeBroker:
         self.stream = StockDataStream(api_key, secret_key, feed=data_feed)
         self.triggers: Dict[str, List[PriceTrigger]] = {}
         self.macro_triggers: Dict[str, List[Any]] = {}
+        self._fired_count = 0
         self._subscribed: set[str] = set()
         self._registered_keys: set[str] = set()
         self._lock = threading.Lock()
@@ -235,7 +236,9 @@ class RealtimeBroker:
         with self._lock:
             symbols = len(self.triggers)
             total = sum(len(bucket) for bucket in self.triggers.values())
-        return {"symbols": symbols, "triggers": total}
+            macros = sum(len(v) for v in self.macro_triggers.values())
+            fired = self._fired_count
+        return {"symbols": symbols, "triggers": total, "macro_triggers": macros, "fired": fired}
 
     def _trigger_key(self, trigger: PriceTrigger) -> str:
         return f"{trigger.hypothesis_id}:{trigger.symbol}:{trigger.operator}:{trigger.value}"
@@ -254,6 +257,9 @@ class RealtimeBroker:
                     event_type="price_threshold",
                     payload={"symbol": symbol, "price": price, "operator": trigger.operator, "value": trigger.value},
                 )
+                self._fired_count += 1
+                if self.logger:
+                    self.logger.info("[Realtime Trigger] %s %s %s fired at %s", symbol, trigger.operator, trigger.value, price)
 
     def _evaluate(self, trigger: PriceTrigger, price: float) -> bool:
         if trigger.operator == ">=":

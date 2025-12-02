@@ -765,12 +765,17 @@ def _collect_stream_stats(
     price_triggers = 0
     broker = realtime_state.get("broker")
     if broker is not None:
-        lock = getattr(broker, "_lock", None)
-        context = lock or nullcontext()
-        with context:
-            trigger_map = getattr(broker, "triggers", {}) or {}
-            price_symbols = len(trigger_map)
-            price_triggers = sum(len(bucket) for bucket in trigger_map.values())
+        try:
+            stats = broker.stats()
+            price_symbols = stats.get("symbols", 0)
+            price_triggers = stats.get("triggers", 0)
+        except Exception:
+            lock = getattr(broker, "_lock", None)
+            context = lock or nullcontext()
+            with context:
+                trigger_map = getattr(broker, "triggers", {}) or {}
+                price_symbols = len(trigger_map)
+                price_triggers = sum(len(bucket) for bucket in trigger_map.values())
 
     news_thread = news_state.get("thread")
     news_connected = bool(news_thread and getattr(news_thread, "is_alive", lambda: False)())
