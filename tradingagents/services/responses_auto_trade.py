@@ -677,6 +677,9 @@ class ResponsesAutoTradeService:
             guard_info = self._plan_guard(summary)
 
         decisions, focus = self._decisions_from_summary(summary)
+        if not decisions:
+            # Fallback: synthesize HOLD decisions with basic triggers so streams have something to track
+            decisions = self._fallback_hold_decisions(focus or focus_tickers, snapshot)
         raw_state = {
             "responses_transcript": transcript,
             "responses_summary": summary,
@@ -976,6 +979,42 @@ class ResponsesAutoTradeService:
         except Exception:
             if self.logger:
                 self.logger.debug("Failed to register triggers with realtime broker", exc_info=True)
+
+    def _fallback_hold_decisions(self, tickers: List[str], snapshot: AccountSnapshot) -> List[TickerDecision]:
+        """Create HOLD decisions with derived triggers when the model returns none."""
+        decisions: List[TickerDecision] = []
+        strategy = resolve_strategy_directive(self.config, None)
+        for ticker in tickers or []:
+            ticker_u = str(ticker or "").upper()
+            if not ticker_u:
+                continue
+            ref_price = (self._reference_prices or {}).get(ticker_u)
+            entry = {
+                "ticker": ticker_u,
+                "action": "HOLD",
+                "priority": 0.3,
+                "plan_actions": [],
+                "next_decision": "",
+                "notes": "",
+                "strategy": strategy.to_dict(),
+                "reference_price": ref_price,
+            }
+            trig_strings = self._build_triggers(strategy, entry, ticker_u)
+            sequential_plan = SequentialPlan(actions=[], next_decision="monitor", notes="", reasoning=[])
+            decision = TickerDecision(
+                ticker=ticker_u,
+                hypothesis={"ticker": ticker_u, "rationale": "", "priority": 0.3, "required_analysts": [], "immediate_actions": "hold"},
+                sequential_plan=sequential_plan,
+                action_queue=trig_strings,
+                immediate_action="hold",
+                priority=0.3,
+                final_decision="HOLD",
+                trader_plan="",
+                final_notes="",
+                strategy=strategy,
+            )
+            decisions.append(decision)
+        return decisions
 
     def _parse_trigger_to_price_trigger(self, default_symbol: str, raw: Any) -> Optional[PriceTrigger]:
         """Convert a memory trigger into a PriceTrigger if price-based."""
