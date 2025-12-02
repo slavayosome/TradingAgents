@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.services.account import AccountSnapshot
+from tradingagents.services.autopilot_events import _utcnow
 
 
 @dataclass

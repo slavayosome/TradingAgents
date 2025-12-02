@@ -892,7 +892,7 @@ class ResponsesAutoTradeService:
             }
             trade_notes = entry.get("execution_plan") or entry.get("notes") or ""
             strategy = self._build_strategy(entry)
-            triggers = self._build_triggers(strategy, entry)
+            triggers = self._build_triggers(strategy, entry, ticker)
             decision = TickerDecision(
                 ticker=ticker,
                 hypothesis=hypothesis,
@@ -917,7 +917,7 @@ class ResponsesAutoTradeService:
         entry["strategy"] = strategy.to_dict()
         return strategy
 
-    def _build_triggers(self, strategy: StrategyDirective, entry: Dict[str, Any]) -> List[str]:
+    def _build_triggers(self, strategy: StrategyDirective, entry: Dict[str, Any], ticker: str) -> List[str]:
         base_triggers = [str(item).lower() for item in entry.get("action_queue", []) if str(item).strip()]
         price = _extract_reference_price(entry)
         if not price and hasattr(self, "_reference_prices"):
@@ -931,7 +931,18 @@ class ResponsesAutoTradeService:
             failure_price = price * (1 - strategy.stop_pct)
             strategy.failure_price = failure_price
             derived.append(f"price <= {failure_price:.2f}")
-        return base_triggers + derived
+        # Ensure at least one price trigger exists
+        triggers = base_triggers + derived
+        if not triggers and price and (strategy.target_pct or strategy.stop_pct):
+            # Fallback to minimal triggers
+            if strategy.target_pct:
+                triggers.append(f"price >= {price * (1 + strategy.target_pct):.2f}")
+            if strategy.stop_pct:
+                triggers.append(f"price <= {price * (1 - strategy.stop_pct):.2f}")
+        # If still empty, add a time/deadline trigger placeholder
+        if not triggers and strategy.deadline:
+            triggers.append(f"deadline:{strategy.deadline}")
+        return triggers
 
     def _persist_structured_memory(self, decisions: List[TickerDecision], snapshot: AccountSnapshot) -> None:
         """Persist decisions using the structured memory schema."""
