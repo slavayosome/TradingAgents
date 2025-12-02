@@ -1756,24 +1756,24 @@ if not hasattr(ResponsesAutoTradeService, "_plan_guard"):
                     )
                     if ok:
                         continue
-                    display = f\"{label} ({status_text or 'pending'})\"
+                    display = f"{label} ({status_text or 'pending'})"
                     incomplete.append(display)
             elif entry.get("plan_actions"):
                 for action in entry.get("plan_actions") or []:
-                    incomplete.append(f\"{action} (no status reported)\")
+                    incomplete.append(f"{action} (no status reported)")
             if not triggers:
-                incomplete.append(\"triggers missing (must include price target/stop and time-based trigger)\")
+                incomplete.append("triggers missing (must include price target/stop and time-based trigger)")
             action = str(entry.get("action") or "").upper()
             if action in {"BUY", "SELL"} and not getattr(self, "_has_order_details", lambda _: False)(entry):
-                incomplete.append(\"order sizing/time_in_force missing (provide quantity or notional + reference_price and time_in_force)\")
+                incomplete.append("order sizing/time_in_force missing (provide quantity or notional + reference_price and time_in_force)")
             if incomplete:
-                details.append({\"ticker\": ticker, \"steps\": incomplete})
+                details.append({"ticker": ticker, "steps": incomplete})
                 if action in {"BUY", "SELL"} and ticker not in blocked:
                     blocked.append(ticker)
         reason = ""
         if details:
-            joined = "; ".join(f\"{item['ticker']}: {', '.join(item['steps'])}\" for item in details)
-            reason = f\"Plan validation incomplete; pending steps -> {joined}\"
+            joined = "; ".join(f"{item['ticker']}: {', '.join(item['steps'])}" for item in details)
+            reason = f"Plan validation incomplete; pending steps -> {joined}"
         return {
             "needs_followup": bool(details),
             "blocked_actions": blocked,
