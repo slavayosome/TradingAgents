@@ -104,6 +104,26 @@ class RealtimeBroker:
         # Structured trigger
         if isinstance(raw, dict):
             trig_type = (raw.get("type") or "").lower()
+            trigger_price = raw.get("trigger_price") or raw.get("target_price") or raw.get("stop_price")
+            operator = None
+            if trigger_price is not None:
+                try:
+                    val = float(trigger_price)
+                except (TypeError, ValueError):
+                    val = None
+                if val is not None:
+                    if trig_type in {"price_take_profit", "price_breakout_watch"}:
+                        operator = ">="
+                    elif trig_type in {"price_stop_loss", "price_breakdown_watch"}:
+                        operator = "<="
+                    if operator:
+                        return PriceTrigger(
+                            hypothesis_id=raw.get("hypothesis_id") or record.id,
+                            symbol=record.ticker.upper(),
+                            operator=operator,
+                            value=val,
+                        )
+            trig_type = (raw.get("type") or "").lower()
             condition = raw.get("condition") or {}
             parsed = self._parse_condition(condition)
             if not parsed:

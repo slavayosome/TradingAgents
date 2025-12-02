@@ -678,7 +678,35 @@ class ResponsesAutoTradeService:
 
         decisions, focus = self._decisions_from_summary(summary)
         if not decisions:
-            raise RuntimeError("Responses returned no decisions; rerun with proper outputs.")
+            # One follow-up attempt to get decisions
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last reply did not include valid `decisions`. Return ONLY JSON with a `decisions` array. "
+                        "Each decision must include ticker, action, priority, plan_actions, plan_status, next_decision, "
+                        "notes, strategy, and triggers. Triggers must include price target/stop and a time/deadline trigger. "
+                        "For BUY/SELL, include a submit_trade_order tool call OR explicit order params "
+                        "(quantity or notional + reference_price) AND time_in_force. No prose."
+                    ),
+                }
+            )
+            response = self._responses_call(
+                conversation,
+                toolbox,
+                transcript,
+                allow_tools=True,
+                submitted_trades=submitted_trades,
+                allow_market_closed=allow_market_closed,
+                max_turns=1,
+            )
+            final_text = self._response_text(response)
+            if final_text:
+                conversation.append({"role": "assistant", "content": final_text})
+            summary = _extract_json_block(final_text)
+            decisions, focus = self._decisions_from_summary(summary)
+            if not decisions:
+                raise RuntimeError("Responses returned no decisions after follow-up; aborting run.")
         raw_state = {
             "responses_transcript": transcript,
             "responses_summary": summary,
@@ -892,6 +920,7 @@ class ResponsesAutoTradeService:
                 "priority": priority,
                 "required_analysts": entry.get("required_analysts") or [],
                 "immediate_actions": immediate,
+                "orders": (entry.get("execution_plan") or {}).get("orders") or entry.get("orders") or [],
             }
             trade_notes = entry.get("execution_plan") or entry.get("notes") or ""
             strategy = self._build_strategy(entry)
@@ -983,10 +1012,30 @@ class ResponsesAutoTradeService:
     def _parse_trigger_to_price_trigger(self, default_symbol: str, raw: Any) -> Optional[PriceTrigger]:
         """Convert a memory trigger into a PriceTrigger if price-based."""
         if isinstance(raw, dict):
+            # Prefer explicit trigger_price + type
+            trigger_price = raw.get("trigger_price") or raw.get("target_price") or raw.get("stop_price")
+            operator = None
+            trig_type = str(raw.get("type") or "").lower()
+            if trigger_price is not None:
+                try:
+                    val = float(trigger_price)
+                except (TypeError, ValueError):
+                    val = None
+                if val is not None:
+                    if trig_type in {"price_take_profit", "price_breakout_watch"}:
+                        operator = ">="
+                    elif trig_type in {"price_stop_loss", "price_breakdown_watch"}:
+                        operator = "<="
+            if operator and trigger_price is not None:
+                return PriceTrigger(
+                    hypothesis_id="",
+                    symbol=str(raw.get("symbol") or default_symbol).upper(),
+                    operator=operator,
+                    value=float(trigger_price),
+                )
             condition = raw.get("condition") or {}
             parsed = self._parse_condition(condition)
             if not parsed:
-                # condition might be a string
                 parsed = self._parse_condition(condition.get("text") if isinstance(condition, dict) else condition)
             if not parsed:
                 return None
