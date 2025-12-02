@@ -28,6 +28,90 @@ from tradingagents.agents.analysts.fundamentals_analyst import create_fundamenta
 from tradingagents.services.realtime_broker import PriceTrigger
 
 
+class ResponsesAutoTradeHelpers:
+    """Mixin to provide helper methods for ResponsesAutoTradeService."""
+
+    def _safe_json(self, raw: str) -> Dict[str, Any]:
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"raw": raw}
+
+    def _extract_tool_calls(self, response: Any) -> List[Dict[str, Any]]:
+        calls: List[Dict[str, Any]] = []
+        output_items = getattr(response, "output", []) or []
+        for item in output_items:
+            if getattr(item, "type", None) != "function_call":
+                continue
+            call_id = getattr(item, "id", None) or getattr(item, "call_id", None)
+            arguments = getattr(item, "arguments", "") or ""
+            calls.append({"id": call_id, "name": getattr(item, "name", ""), "arguments": arguments})
+        return calls
+
+    def _extract_reasoning_traces(self, response: Any) -> List[str]:
+        traces: List[str] = []
+        output_items = getattr(response, "output", []) or []
+        for item in output_items:
+            if getattr(item, "type", None) != "reasoning":
+                continue
+            summary_bits: List[str] = []
+            for summary in getattr(item, "summary", []) or []:
+                text = getattr(summary, "text", "") or ""
+                if text:
+                    summary_bits.append(text.strip())
+            detail_bits: List[str] = []
+            for content in getattr(item, "content", []) or []:
+                text = getattr(content, "text", "") or ""
+                if text:
+                    detail_bits.append(text.strip())
+            summary_text = "; ".join(bit for bit in summary_bits if bit)
+            detail_text = " ".join(bit for bit in detail_bits if bit)
+            if detail_text and detail_text != summary_text:
+                snippet = f"{summary_text} — {detail_text}" if summary_text else detail_text
+            else:
+                snippet = summary_text or detail_text
+            if snippet:
+                traces.append(snippet)
+        return traces
+
+    def _response_text(self, response: Any) -> str:
+        if not response:
+            return ""
+        if hasattr(response, "output_text") and response.output_text:
+            return response.output_text
+        pieces: List[str] = []
+        for output in getattr(response, "output", []) or []:
+            if getattr(output, "type", None) == "message":
+                for content in getattr(output, "content", []) or []:
+                    if getattr(content, "type", None) == "output_text":
+                        pieces.append(getattr(content, "text", "") or "")
+        return "\n".join(pieces).strip()
+
+    def _emit_narration(self, message: str) -> None:
+        snippet = str(message or "").strip()
+        if not snippet:
+            return
+        try:
+            print(f"[Responses Orchestrator] {snippet}")
+        except Exception:
+            pass
+
+    def _emit_tool_event(self, name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
+        try:
+            status = "OK"
+            if isinstance(result, dict) and result.get("error"):
+                status = "ERR"
+            args_str = _trimmed_json(args)
+            response_payload = result.get("report") if isinstance(result, dict) and isinstance(result.get("report"), str) else result
+            response_str = _trimmed_json(response_payload)
+            print(f"[Tool:{status}] {name}, Args:{args_str}")
+            print(f"[Tool:{status}] {name}, Response:{response_str}")
+        except Exception:
+            pass
+
+
 def _extract_json_block(text: str) -> Dict[str, Any]:
     if not text:
         return {}
@@ -436,7 +520,7 @@ class TradingToolbox:
         }
 
 
-class ResponsesAutoTradeService:
+class ResponsesAutoTradeService(ResponsesAutoTradeHelpers):
     """Auto-trade orchestration powered by the OpenAI Responses API."""
 
     _PROMPT_NAME = "responses_auto_trade"
