@@ -707,6 +707,16 @@ class ResponsesAutoTradeService:
             decisions, focus = self._decisions_from_summary(summary)
             if not decisions:
                 raise RuntimeError("Responses returned no decisions after follow-up; aborting run.")
+
+        # Auto-submit orders if execution_plan/orders are present for BUY/SELL
+        for decision in decisions:
+            if (decision.final_decision or decision.immediate_action).upper() not in {"BUY", "SELL"}:
+                continue
+            orders = (decision.hypothesis.get("orders") or []) if isinstance(decision.hypothesis, dict) else []
+            if not orders:
+                continue
+            for order in orders:
+                self._invoke_submit_trade_tool(conversation, toolbox, transcript, order, submitted_trades)
         raw_state = {
             "responses_transcript": transcript,
             "responses_summary": summary,
@@ -722,6 +732,7 @@ class ResponsesAutoTradeService:
             raw_state.setdefault("skip_reason", guard_info.get("reason"))
         if self.memory_store and self.memory_store.is_enabled() and decisions:
             self._persist_structured_memory(decisions, snapshot)
+            _refresh_stream_registrations_from_memory(self.graph, decisions)
         self._auto_execute_trades(
             decisions,
             submitted_trades,
@@ -1007,6 +1018,82 @@ class ResponsesAutoTradeService:
         except Exception:
             if self.logger:
                 self.logger.debug("Failed to register triggers with realtime broker", exc_info=True)
+
+    def _invoke_submit_trade_tool(
+        self,
+        conversation: List[Dict[str, Any]],
+        toolbox: TradingToolbox,
+        transcript: List[str],
+        order: Dict[str, Any],
+        submitted_trades: Optional[Set[Tuple[str, str]]],
+    ) -> None:
+        args = {
+            "symbol": order.get("instrument") or order.get("symbol"),
+            "action": order.get("side", "").upper() or order.get("action"),
+            "quantity": order.get("quantity"),
+            "notional": order.get("notional"),
+            "reference_price": order.get("reference_price") or order.get("limit_price"),
+            "time_in_force": order.get("time_in_force"),
+        }
+        if not args.get("symbol") or not args.get("action") or not args.get("time_in_force"):
+            return
+        try:
+            result = toolbox.invoke("submit_trade_order", args)
+        except Exception as exc:
+            result = {"error": str(exc)}
+        self._emit_tool_event("submit_trade_order", args, result)
+        conversation.append(
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "tool": "submit_trade_order",
+                        "tool_call_id": "auto_submit",
+                        "result": result,
+                    },
+                    default=str,
+                ),
+            }
+        )
+        if submitted_trades is not None and not result.get("error"):
+            submitted_trades.add((str(args["symbol"]).upper(), str(args["action"]).upper()))
+
+
+def _refresh_stream_registrations_from_memory(graph: TradingAgentsGraph, decisions: List[TickerDecision]) -> None:
+    """Refresh realtime broker with triggers from latest decisions."""
+    broker = getattr(graph, "realtime_broker", None)
+    if not broker:
+        return
+    try:
+        parsed: List[PriceTrigger] = []
+        for decision in decisions:
+            ticker = decision.ticker
+            for trig in decision.action_queue or []:
+                pt = None
+                if hasattr(graph, "responses_service") and graph.responses_service:
+                    pt = graph.responses_service._parse_trigger_to_price_trigger(ticker, trig)  # type: ignore[attr-defined]
+                # Fallback parse using broker logic
+                if pt is None and isinstance(trig, str):
+                    # naive parse for price triggers
+                    text = trig.strip().lower()
+                    if text.startswith("price >="):
+                        try:
+                            val = float(text.split(">=")[1].strip().split()[0])
+                            pt = PriceTrigger(hypothesis_id="", symbol=ticker.upper(), operator=">=", value=val)
+                        except Exception:
+                            pass
+                    elif text.startswith("price <="):
+                        try:
+                            val = float(text.split("<=")[1].strip().split()[0])
+                            pt = PriceTrigger(hypothesis_id="", symbol=ticker.upper(), operator="<=", value=val)
+                        except Exception:
+                            pass
+                if pt:
+                    parsed.append(pt)
+        if parsed:
+            broker.register_manual_triggers(parsed)
+    except Exception:
+        pass
 
 
     def _parse_trigger_to_price_trigger(self, default_symbol: str, raw: Any) -> Optional[PriceTrigger]:
