@@ -488,6 +488,7 @@ class ResponsesAutoTradeService:
             "not_applicable",
         }
         self._prompt_defaults = prompt_defaults(self._PROMPT_NAME)
+        self._strategy_brief_cache = self._strategy_presets_brief()
 
     def run(
         self,
