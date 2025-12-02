@@ -1698,6 +1698,18 @@ if not hasattr(ResponsesAutoTradeService, "_emit_tool_event"):
             pass
     ResponsesAutoTradeService._emit_tool_event = _fallback_emit_tool_event  # type: ignore[attr-defined]
 
+# Defensive patch: ensure _safe_json exists
+if not hasattr(ResponsesAutoTradeService, "_safe_json"):
+    def _fallback_safe_json(self, raw: str) -> Dict[str, Any]:  # type: ignore[method-assign]
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"raw": raw}
+
+    ResponsesAutoTradeService._safe_json = _fallback_safe_json  # type: ignore[attr-defined]
+
 # Defensive patch: ensure _extract_tool_calls exists
 if not hasattr(ResponsesAutoTradeService, "_extract_tool_calls"):
     def _fallback_extract_tool_calls(self, response: Any) -> List[Dict[str, Any]]:  # type: ignore[method-assign]
@@ -1770,6 +1782,34 @@ if not hasattr(ResponsesAutoTradeService, "_plan_guard"):
         }
 
     ResponsesAutoTradeService._plan_guard = _fallback_plan_guard  # type: ignore[attr-defined]
+
+
+def _log_runtime_introspection() -> None:
+    """Optional import-time introspection to detect stale code paths in deployments."""
+    if str(os.getenv("TRADINGAGENTS_DEBUG_IMPORTS", "")).lower() not in {"1", "true", "yes"}:
+        return
+    required_attrs = [
+        "_build_system_prompt",
+        "_strategy_presets_brief",
+        "_extract_reasoning_traces",
+        "_response_text",
+        "_emit_narration",
+        "_emit_tool_event",
+        "_extract_tool_calls",
+        "_safe_json",
+        "_plan_guard",
+    ]
+    missing = [name for name in required_attrs if not hasattr(ResponsesAutoTradeService, name)]
+    try:
+        print(
+            "[ResponsesAutoTradeService] loaded",
+            {"file": __file__, "missing": missing},
+        )
+    except Exception:
+        pass
+
+
+_log_runtime_introspection()
 
 
 def _coerce_priority(value: Any) -> float:
