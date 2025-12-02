@@ -774,6 +774,7 @@ class ResponsesAutoTradeService(ResponsesAutoTradeHelpers):
 
         decisions, focus = self._decisions_from_summary(summary)
         if not decisions:
+            self.logger.warning("No decisions parsed; summary keys=%s summary=%s", list(summary.keys()), summary)
             # One follow-up attempt to get decisions
             conversation.append(
                 {
