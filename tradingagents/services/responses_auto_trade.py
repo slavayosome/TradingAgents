@@ -893,6 +893,9 @@ class ResponsesAutoTradeService:
             trade_notes = entry.get("execution_plan") or entry.get("notes") or ""
             strategy = self._build_strategy(entry)
             triggers = self._build_triggers(strategy, entry, ticker)
+            if not triggers:
+                # Force at least placeholder triggers to avoid empty decisions
+                triggers = [f"deadline:{strategy.deadline}"] if strategy.deadline else ["trigger:pending"]
             decision = TickerDecision(
                 ticker=ticker,
                 hypothesis=hypothesis,
