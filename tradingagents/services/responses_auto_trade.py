@@ -439,6 +439,7 @@ class ResponsesAutoTradeService:
 
     _PROMPT_NAME = "responses_auto_trade"
     _MEMORY_SCHEMA_VERSION = "v1"
+    _ALLOWED_TIFS = {"DAY", "GTC", "FOK", "IOC", "OPG", "CLS"}
 
     def __init__(
         self,
