@@ -962,7 +962,11 @@ class ResponsesAutoTradeService:
             summary = _extract_json_block(final_text)
             guard_info = self._plan_guard(summary)
 
-        decisions, focus = self._decisions_from_summary(summary)
+        final_payload = request_meta.get("final_decisions")
+        if final_payload:
+            decisions, focus = self._decisions_from_finalized(final_payload)
+        else:
+            decisions, focus = self._decisions_from_summary(summary)
         raw_state = {
             "responses_transcript": transcript,
             "responses_summary": summary,
@@ -1203,6 +1207,65 @@ class ResponsesAutoTradeService:
             )
             decisions.append(decision)
 
+        return decisions, focus
+
+    def _decisions_from_finalized(self, payload: Dict[str, Any]) -> Tuple[List[TickerDecision], List[str]]:
+        decisions_payload = payload.get("decisions") or []
+        decisions: List[TickerDecision] = []
+        focus: List[str] = []
+        for entry in decisions_payload:
+            ticker = str(entry.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            focus.append(ticker)
+            action = str(entry.get("action") or "").upper()
+            priority = entry.get("priority") or 0.0
+            try:
+                priority = float(priority)
+            except (TypeError, ValueError):
+                mapping = {"low": 0.25, "medium": 0.5, "med": 0.5, "high": 0.8}
+                priority = mapping.get(str(priority).lower(), 0.0)
+            plan_actions = entry.get("plan_actions") or []
+            plan_status = entry.get("plan_status") or []
+            notes = entry.get("notes") or ""
+            strategy = entry.get("strategy") or {}
+            next_decision = entry.get("next_decision") or action
+            trade_block = entry.get("trade") or {}
+            tif = trade_block.get("time_in_force")
+            size_hint = {
+                "qty": trade_block.get("quantity"),
+                "notional": trade_block.get("notional"),
+            }
+            sequential_plan = SequentialPlan(
+                actions=[str(item).lower() for item in plan_actions],
+                next_decision=str(next_decision).lower(),
+                notes=notes,
+                reasoning=[],
+            )
+            hypothesis = {
+                "ticker": ticker,
+                "rationale": notes,
+                "priority": priority,
+                "required_analysts": [],
+                "immediate_actions": action.lower(),
+            }
+            decision = TickerDecision(
+                ticker=ticker,
+                hypothesis=hypothesis,
+                sequential_plan=sequential_plan,
+                action_queue=[],
+                immediate_action=action.lower(),
+                priority=priority,
+                final_decision=action,
+                trader_plan=notes,
+                final_notes=notes,
+                strategy=strategy if isinstance(strategy, dict) else {},
+            )
+            if tif:
+                decision.hypothesis["time_in_force"] = tif
+            if size_hint.get("qty") or size_hint.get("notional"):
+                decision.hypothesis["size_hint"] = size_hint
+            decisions.append(decision)
         return decisions, focus
 
     def _build_strategy(self, entry: Dict[str, Any]) -> StrategyDirective:
