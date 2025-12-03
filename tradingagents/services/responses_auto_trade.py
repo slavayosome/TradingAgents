@@ -203,18 +203,17 @@ class TradingToolbox:
             tools["submit_trade_order"] = ResponsesTool(
                 name="submit_trade_order",
                 description=(
-                    "Submit a trade directive (BUY/SELL/HOLD) for a ticker with optional sizing. Honors dry-run and market-open checks. "
-                    "Provide quantity in shares when you can; otherwise pass notional and a reference price to convert. "
-                    "You must supply time_in_force (one of DAY, GTC, FOK, IOC, OPG, CLS) based on the scenario."
+                    "Submit a trade directive (BUY/SELL) for a ticker. You MUST provide quantity (preferred) or notional with a reference price. "
+                    "time_in_force is required (DAY, GTC, FOK, IOC, OPG, CLS). Do not invent other actions. Honors dry-run and market-open checks."
                 ),
                 schema={
                     "type": "object",
                     "properties": {
                         "symbol": {"type": "string"},
-                        "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                        "action": {"type": "string", "enum": ["BUY", "SELL"]},
                         "quantity": {
                             "type": "number",
-                            "description": "Number of shares to trade (preferred).",
+                            "description": "Number of shares to trade (required unless notional provided).",
                         },
                         "notional": {
                             "type": "number",
@@ -336,6 +335,12 @@ class TradingToolbox:
         notional = args.get("notional")
         reference_price = args.get("reference_price")
         time_in_force = str(args.get("time_in_force") or "").upper()
+        if action not in {"BUY", "SELL"}:
+            return {"status": "error", "reason": f"invalid_action:{action or '<empty>'}"}
+        if quantity in (None, "") and notional in (None, ""):
+            return {"status": "error", "reason": "missing_quantity_or_notional"}
+        if notional not in (None, "") and reference_price in (None, ""):
+            return {"status": "error", "reason": "missing_reference_price_for_notional"}
         if not time_in_force:
             return {"status": "error", "reason": "missing_time_in_force"}
         if time_in_force not in self._ALLOWED_TIFS:
