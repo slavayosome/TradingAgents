@@ -516,7 +516,7 @@ class DecisionEntry(BaseModel):
     next_decision: Optional[str] = None
     plan_actions: List[str] = Field(default_factory=list)
     plan_status: List[Dict[str, str]] = Field(default_factory=list)
-    strategy: Dict[str, Any]
+    strategy: Dict[str, Any] = Field(default_factory=dict)
     trade: Optional[TradeBlock] = None
 
     @validator("ticker")
@@ -535,6 +535,12 @@ class DecisionEntry(BaseModel):
             text = str(v or "").strip().lower()
             mapping = {"low": 0.25, "medium": 0.5, "med": 0.5, "high": 0.8}
             return mapping.get(text, 0.0)
+
+    @model_validator(mode="after")
+    def default_strategy(self) -> "DecisionEntry":  # noqa: N805
+        if not self.strategy:
+            self.strategy = {}
+        return self
 
 
 class FinalDecisionValidator:
