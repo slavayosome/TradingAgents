@@ -106,6 +106,7 @@ class TradingToolbox:
         )
         self._tools = self._build_tools()
         self._decision_validator = FinalDecisionValidator()
+        self._MEMORY_SCHEMA_VERSION = getattr(ResponsesAutoTradeService, "_MEMORY_SCHEMA_VERSION", "v1")
 
     @property
     def specs(self) -> List[Dict[str, Any]]:
