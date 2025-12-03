@@ -1200,10 +1200,37 @@ class ResponsesAutoTradeService:
     def _safe_json(self, raw: str) -> Dict[str, Any]:
         if not raw:
             return {}
+        # Try direct parse first
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            return {"raw": raw}
+            pass
+
+        candidates = []
+        if "```" in raw:
+            parts = raw.split("```")
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                if part.lower().startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("{") or part.startswith("["):
+                    candidates.append(part)
+        else:
+            # Fallback: grab substring between first { and last }
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                candidates.append(raw[start : end + 1])
+
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+        return {"raw": raw}
 
     def _strategy_presets_brief(self) -> Dict[str, Any]:
         cfg = self.config.get("trading_strategies", {}) or {}
