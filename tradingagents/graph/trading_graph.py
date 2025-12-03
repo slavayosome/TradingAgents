@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, Tuple, List, Optional, TYPE_CHECKING
+from pydantic import ValidationError
 
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
@@ -26,6 +27,12 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.integrations.alpaca_mcp import AlpacaMCPClient, AlpacaMCPConfig, AlpacaMCPError
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.graph.scheduler import create_action_scheduler
+from tradingagents.graph.contracts import (
+    OrchestratorOutput,
+    PlannerOutput,
+    validate_orchestrator_payload,
+    validate_planner_payload,
+)
 
 if TYPE_CHECKING:
     from tradingagents.services.account import AccountSnapshot
@@ -186,6 +193,8 @@ class TradingAgentsGraph:
         self.propagator = Propagator()
         self.reflector = Reflector(self.quick_thinking_llm)
         self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+        self._quick_signal_cache: Dict[str, Any] = {}
+        self._portfolio_cache: Dict[str, Any] = {}
 
         # State tracking
         self.curr_state = None
@@ -286,6 +295,11 @@ class TradingAgentsGraph:
                 )
             return snapshots
 
+        cache_key = "|".join(symbols)
+        cached_portfolio = self._portfolio_cache.get(cache_key)
+        if cached_portfolio:
+            return cached_portfolio
+
         client = self._get_alpaca_client()
         if client is None:
             return [
@@ -304,6 +318,42 @@ class TradingAgentsGraph:
             account_text = client.fetch_account_info()
             positions_text = client.fetch_positions()
             orders_text = client.fetch_orders()
+
+            def _truncate(text: str, limit: int = 2000) -> str:
+                if not text:
+                    return ""
+                if len(text) <= limit:
+                    return text
+                return text[: limit - 3] + "..."
+
+            account_text = _truncate(account_text, 2000)
+            positions_text = _truncate(positions_text, 2000)
+            orders_text = _truncate(orders_text, 2000)
+
+            def _summarize_positions(raw_text: str, limit: int = 8) -> List[Dict[str, str]]:
+                rows: List[Dict[str, str]] = []
+                current: Dict[str, str] = {}
+                for line in (raw_text or "").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.lower().startswith("symbol:"):
+                        if current:
+                            rows.append(current)
+                            current = {}
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        key = key.strip().lower().replace(" ", "_")
+                        value = value.strip()
+                        if key in {"symbol", "symbol:"}:
+                            key = "symbol"
+                        current[key] = value
+                if current:
+                    rows.append(current)
+                return rows[:limit]
+
+            positions_summary = _summarize_positions(positions_text)
+
             snapshots: List[Dict[str, str]] = []
             for idx, symbol in enumerate(symbols):
                 snapshots.append(
@@ -313,9 +363,11 @@ class TradingAgentsGraph:
                         "account": account_text if idx == 0 else "",
                         "positions": positions_text if idx == 0 else "",
                         "orders": orders_text if idx == 0 else "",
+                        "positions_summary": positions_summary if idx == 0 else [],
                         "summary_prompt": "Live Alpaca data available" if idx == 0 else "",
                     }
                 )
+            self._portfolio_cache[cache_key] = snapshots
             return snapshots
         except AlpacaMCPError as exc:
             self.logger.warning("Alpaca MCP call failed: %s", exc)
@@ -358,6 +410,10 @@ class TradingAgentsGraph:
 
         trade_date_value = trade_dt.date()
         start_dt = trade_date_value - timedelta(days=lookback_days)
+        cache_key = f"{symbol.upper()}:{start_dt.isoformat()}:{trade_date_value.isoformat()}:{limit}"
+        cached = self._quick_signal_cache.get(cache_key)
+        if cached:
+            return cached
 
         def safe_call(method: str, *args) -> str:
             try:
@@ -369,16 +425,24 @@ class TradingAgentsGraph:
         news_text = safe_call("get_news", symbol, start_dt.isoformat(), trade_date_value.isoformat())
         global_text = safe_call("get_global_news", trade_date_value.isoformat(), lookback_days, limit)
 
+        def headlines(text: str, max_items: int = 8) -> str:
+            lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+            if len(lines) <= max_items:
+                return "\n".join(lines)
+            return "\n".join(lines[:max_items])
+
         def truncate(txt: str, max_chars: int = 2000) -> str:
             if len(txt) <= max_chars:
                 return txt
             return txt[: max_chars - 3] + "..."
 
-        return {
+        payload = {
             "symbol": symbol.upper(),
-            "news": truncate(news_text, 1500),
-            "global": truncate(global_text, 1500),
+            "news": truncate(headlines(news_text, 8), 1200),
+            "global": truncate(headlines(global_text, 8), 800),
         }
+        self._quick_signal_cache[cache_key] = payload
+        return payload
 
     def check_market_status(self) -> Dict[str, Any]:
         """Return the current Alpaca market clock status if available."""
@@ -438,13 +502,18 @@ class TradingAgentsGraph:
             "notes (string), reasoning (array of short bullet explanations)."
         )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(payload)},
-        ]
+        trade_policy = payload.get("trade_policy") or {}
+        default_tif = str(trade_policy.get("default_time_in_force") or "DAY").upper()
+        default_size_hint = trade_policy.get("default_size_hint") or {}
 
-        try:
-            response = self.quick_thinking_llm.invoke(messages)
+        def _invoke(payload_obj: Dict[str, Any]) -> str:
+            request_payload = json.dumps(payload_obj)
+            response = self.quick_thinking_llm.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": request_payload},
+                ]
+            )
             content = getattr(response, "content", None)
             if isinstance(content, list):
                 content = "".join(
@@ -453,38 +522,76 @@ class TradingAgentsGraph:
                 )
             if not content:
                 content = str(response)
+            token_estimate = (len(system_prompt) + len(request_payload) + len(content)) // 4
+            return content, token_estimate
+
+        def _parse_and_validate(content: str, token_estimate: int) -> Dict[str, Any]:
+            try:
+                structured = json.loads(content)
+            except json.JSONDecodeError:
+                structured = _extract_json_block(content)
+            if not isinstance(structured, dict):
+                structured = {}
+            actions = structured.get("actions")
+            if not isinstance(actions, list):
+                actions = [str(actions)] if actions else []
+            reasoning = structured.get("reasoning")
+            if not isinstance(reasoning, list):
+                reasoning = [str(reasoning)] if reasoning else []
+            plan = {
+                "actions": [str(item).strip().lower() for item in actions if str(item).strip()],
+                "next_decision": str(structured.get("next_decision") or "monitor").lower(),
+                "notes": str(structured.get("notes") or ""),
+                "reasoning": [str(item) for item in reasoning if str(item)],
+            }
+            validated = validate_planner_payload(
+                {
+                    "actions": plan["actions"],
+                    "next_decision": plan["next_decision"],
+                    "notes": plan["notes"],
+                    "reasoning": plan["reasoning"],
+                    "time_in_force": structured.get("time_in_force") or default_tif,
+                    "size_hint": structured.get("size_hint") or default_size_hint,
+                }
+            ).dict()
+            return {
+                "structured": plan,
+                "validated": validated,
+                "planner_status": "ok",
+                "text": content,
+                "token_estimate": token_estimate,
+            }
+
+        try:
+            content_full, token_est_full = _invoke(payload)
+            parsed = _parse_and_validate(content_full, token_est_full)
+        except ValidationError as exc:
+            self.logger.warning("Planner validation failed, retrying with slim payload: %s", exc)
+            slim_payload = {
+                key: payload.get(key)
+                for key in (
+                    "hypotheses",
+                    "active_hypothesis",
+                    "trade_policy",
+                    "account_summary",
+                    "positions_summary",
+                    "focus_symbols",
+                    "focus_symbol",
+                )
+                if key in payload
+            }
+            try:
+                content_slim, token_est_slim = _invoke(slim_payload)
+                parsed = _parse_and_validate(content_slim, token_est_slim)
+                parsed["planner_status"] = "ok_retry"
+            except Exception as exc2:  # pragma: no cover
+                self.logger.warning("Planner retry failed: %s", exc2)
+                return {"error": str(exc2)}
         except Exception as exc:  # pragma: no cover
             self.logger.warning("Sequential plan generation failed: %s", exc)
             return {"error": str(exc)}
 
-        structured: Dict[str, Any]
-        try:
-            structured = json.loads(content)
-        except json.JSONDecodeError:
-            structured = _extract_json_block(content)
-
-        if not isinstance(structured, dict):
-            structured = {}
-
-        actions = structured.get("actions")
-        if not isinstance(actions, list):
-            actions = [str(actions)] if actions else []
-
-        reasoning = structured.get("reasoning")
-        if not isinstance(reasoning, list):
-            reasoning = [str(reasoning)] if reasoning else []
-
-        plan = {
-            "actions": [str(item).strip().lower() for item in actions if str(item).strip()],
-            "next_decision": str(structured.get("next_decision") or "monitor").lower(),
-            "notes": str(structured.get("notes") or ""),
-            "reasoning": [str(item) for item in reasoning if str(item)],
-        }
-
-        return {
-            "structured": plan,
-            "text": content,
-        }
+        return parsed
 
 
     def _maybe_execute_trade(
@@ -563,7 +670,11 @@ class TradingAgentsGraph:
 
         allowed_tifs = {"DAY", "GTC", "FOK", "IOC", "OPG", "CLS"}
         if not time_in_force:
-            return {"status": "skipped", "reason": "missing_time_in_force"}
+            return {
+                "status": "skipped",
+                "reason": "missing_time_in_force",
+                "hint": "Provide time_in_force (DAY/GTC/FOK/IOC/OPG/CLS) from planner/orchestrator.",
+            }
         if str(time_in_force).upper() not in allowed_tifs:
             return {"status": "skipped", "reason": f"invalid_time_in_force:{time_in_force}"}
 
@@ -730,9 +841,12 @@ class TradingAgentsGraph:
             processed_decision = self.process_signal(decision_text)
         else:
             processed_decision = ""
+        size_hint = final_state.get("size_hint") or {}
         execution_result = self._maybe_execute_trade(
             final_state,
             decision_text,
+            quantity=size_hint.get("qty") if isinstance(size_hint, dict) else None,
+            notional=size_hint.get("notional") if isinstance(size_hint, dict) else None,
             time_in_force=final_state.get("time_in_force"),
         )
         processed_result = {
@@ -857,6 +971,7 @@ class TradingAgentsGraph:
                 "orchestrator_buying_power": final_state.get("orchestrator_buying_power"),
                 "orchestrator_cash_available": final_state.get("orchestrator_cash_available"),
                 "orchestrator_portfolio_value": final_state.get("orchestrator_portfolio_value"),
+                "orchestrator_token_estimate": final_state.get("orchestrator_token_estimate"),
                 "active_hypothesis": final_state.get("active_hypothesis"),
                 "scheduled_analysts_plan": final_state.get("scheduled_analysts_plan"),
                 "action_queue": final_state.get("action_queue"),
@@ -865,6 +980,15 @@ class TradingAgentsGraph:
                 "planner_notes": final_state.get("planner_notes"),
                 "execution": processed.get("execution"),
                 "decision": processed.get("decision"),
+                "orchestrator_status": final_state.get("orchestrator_status"),
+                "planner_status": final_state.get("planner_status"),
+                "time_in_force": final_state.get("time_in_force"),
+                "size_hint": final_state.get("size_hint"),
+                "planner_token_estimate": final_state.get("planner_token_estimate"),
+                "validation_errors": {
+                    "orchestrator": getattr(final_state, "orchestrator_validation_error", None),
+                    "planner": getattr(final_state, "planner_validation_error", None),
+                },
             }
             with open(summary_path, "w", encoding="utf-8") as handle:
                 json.dump(summary, handle, indent=2, default=str)

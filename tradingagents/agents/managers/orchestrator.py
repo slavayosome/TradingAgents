@@ -8,6 +8,8 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from tradingagents.dataflows.interface import route_to_vendor
+from tradingagents.graph.contracts import validate_orchestrator_payload
+from pydantic import ValidationError
 
 
 def create_portfolio_orchestrator(
@@ -154,19 +156,66 @@ def create_portfolio_orchestrator(
             "trade_policy": trade_policy,
         }
 
-        response = llm.invoke(
-            [
+        def _invoke_and_validate(payload_obj: Dict[str, Any], attempt: str) -> Dict[str, Any]:
+            messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload)},
+                {"role": "user", "content": json.dumps(payload_obj)},
             ]
-        )
+            response = llm.invoke(messages)
+            content = getattr(response, "content", None)
+            if isinstance(content, list):
+                content = "".join(
+                    chunk.get("text", "") if isinstance(chunk, dict) else str(chunk)
+                    for chunk in content
+                )
+            if not content:
+                content = str(response)
+            token_estimate = (len(system_prompt) + len(json.dumps(payload_obj)) + len(content)) // 4
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                parsed = {}
+            try:
+                validated = validate_orchestrator_payload(parsed).dict()
+                validated["attempt"] = attempt
+                validated["token_estimate"] = token_estimate
+                return validated
+            except ValidationError as exc:
+                try:
+                    print(f"[Orchestrator] Validation failed ({attempt}): {exc}")
+                except Exception:
+                    pass
+                raise
 
+        minimal_payload = {
+            "profile": payload["profile"],
+            "account_summary": payload["account_summary"],
+            "positions": payload["positions"],
+            "existing_holdings": payload["existing_holdings"],
+            "universe_candidates": payload["universe_candidates"],
+            "trade_policy": payload["trade_policy"],
+            "current_hypotheses": payload["current_hypotheses"],
+        }
+
+        validation_status = "ok"
         try:
-            parsed = json.loads(response.content if hasattr(response, "content") else str(response))
-        except json.JSONDecodeError:
-            parsed = {"hypotheses": [], "notes": "Failed to parse orchestrator response."}
+            validated = _invoke_and_validate(payload, "full")
+        except ValidationError:
+            validation_status = "invalid_schema"
+            state["orchestrator_validation_error"] = "full_payload_invalid"
+            try:
+                validated = _invoke_and_validate(minimal_payload, "minimal")
+                validation_status = validated.get("status", validation_status)
+            except Exception:
+                state["orchestrator_validation_error"] = "both_payloads_invalid"
+                validated = {
+                    "hypotheses": [],
+                    "summary": "",
+                    "status": "invalid_schema",
+                    "attempt": "failed",
+                }
 
-        hypotheses_raw = parsed.get("hypotheses", [])[:max_hypotheses]
+        hypotheses_raw = validated.get("hypotheses", [])[:max_hypotheses]
         if override_symbols:
             allowed = set(override_symbols)
             filtered = [item for item in hypotheses_raw if isinstance(item, dict) and str(item.get("ticker", "")).upper() in allowed]
@@ -176,8 +225,14 @@ def create_portfolio_orchestrator(
                 hypotheses = [hypotheses_raw[0]] if hypotheses_raw else []
         else:
             hypotheses = hypotheses_raw
-        summary_text = parsed.get("summary") or first_snapshot.get("summary_prompt", "")
-        status_text = parsed.get("status") or first_snapshot.get("status", "ok")
+        summary_text = validated.get("summary") or first_snapshot.get("summary_prompt", "")
+        status_text = validated.get("status") or first_snapshot.get("status", "ok")
+        if validation_status != "ok":
+            status_text = validation_status
+        state["orchestrator_status"] = status_text
+        state["orchestrator_token_estimate"] = validated.get("token_estimate")
+        if validation_status != "ok":
+            state["orchestrator_validation_error"] = validation_status
 
         trade_priority_threshold = float(trade_policy.get("priority_threshold", 0.8))
         min_cash_abs = float(trade_policy.get("min_cash_absolute", 0))
@@ -432,8 +487,9 @@ def create_portfolio_orchestrator(
                 ticker_plan_summaries[active_ticker or "<unknown>"] = planner_raw if planner_raw else {}
 
             if isinstance(planner_raw, dict):
-                plan_structured = planner_raw.get("structured")
+                plan_structured = planner_raw.get("validated") or planner_raw.get("structured")
                 planner_notes = planner_raw.get("text") or planner_raw.get("notes", "")
+                planner_status = planner_raw.get("planner_status")
                 if plan_structured is None:
                     plan_text = planner_raw.get("text")
                     if plan_text:
@@ -457,6 +513,18 @@ def create_portfolio_orchestrator(
                 planner_immediate = str(plan_structured.get("next_decision") or "").lower()
                 planner_notes = planner_notes or plan_structured.get("notes", "")
                 planner_next_directive = plan_structured.get("next_directive")
+                tif = plan_structured.get("time_in_force")
+                if tif and "time_in_force" not in state:
+                    state["time_in_force"] = str(tif).upper()
+                size_hint = plan_structured.get("size_hint")
+                if size_hint and "size_hint" not in state:
+                    state["size_hint"] = size_hint
+                if planner_status:
+                    state["planner_status"] = planner_status
+                if planner_status and planner_status != "ok":
+                    state["planner_validation_error"] = planner_status
+                if "token_estimate" in plan_structured and plan_structured["token_estimate"]:
+                    state["planner_token_estimate"] = plan_structured["token_estimate"]
             elif isinstance(plan_structured, list):
                 raw_actions = plan_structured
             else:
