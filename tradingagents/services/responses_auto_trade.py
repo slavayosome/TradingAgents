@@ -860,7 +860,15 @@ class ResponsesAutoTradeService:
             if not ticker:
                 continue
             focus.append(ticker)
-            priority = float(entry.get("priority") or entry.get("confidence") or 0)
+        priority_raw = entry.get("priority") or entry.get("confidence") or 0
+        def _priority_to_float(value: Any) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                text = str(value or "").strip().lower()
+                mapping = {"low": 0.25, "medium": 0.5, "med": 0.5, "high": 0.8}
+                return mapping.get(text, 0.0)
+        priority = _priority_to_float(priority_raw)
             action = str(entry.get("action") or entry.get("decision") or "monitor").upper()
             plan_actions = entry.get("plan_actions") or entry.get("actions") or []
             if isinstance(plan_actions, str):
