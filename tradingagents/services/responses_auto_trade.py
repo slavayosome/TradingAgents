@@ -183,7 +183,7 @@ class TradingToolbox:
             ),
             "fetch_indicators": ResponsesTool(
                 name="fetch_indicators",
-                description="Fetch technical indicators for a symbol. Indicators should be provided as a list of canonical names (e.g., rsi, close_50_sma).",
+                description="Fetch technical indicators for a symbol.",
                 schema={
                     "type": "object",
                     "properties": {
@@ -213,23 +213,20 @@ class TradingToolbox:
                     "properties": {
                         "symbol": {"type": "string"},
                         "action": {"type": "string", "enum": ["BUY", "SELL"]},
-                        "quantity": {
-                            "type": "number",
-                            "description": "Number of shares to trade (required unless notional provided).",
-                        },
-                        "notional": {
-                            "type": "number",
-                            "description": "Dollar amount to allocate; requires reference_price for conversion.",
-                        },
-                        "reference_price": {
-                            "type": "number",
-                            "description": "Price used to convert notional to shares; use your latest fetch_market_data/fetch_indicators price.",
-                        },
+                        "quantity": {"type": "number"},
+                        "notional": {"type": "number"},
+                        "reference_price": {"type": "number"},
                         "time_in_force": {
                             "type": "string",
-                            "description": "Order time in force (one of DAY, GTC, FOK, IOC, OPG, CLS). Decide per scenario.",
                             "enum": ["DAY", "GTC", "FOK", "IOC", "OPG", "CLS"],
                         },
+                        "order_type": {
+                            "type": "string",
+                            "enum": ["market", "limit", "stop", "stop_limit"],
+                            "default": "market",
+                        },
+                        "limit_price": {"type": "number"},
+                        "stop_price": {"type": "number"},
                         "notes": {"type": "string"},
                     },
                     "required": ["symbol", "action", "time_in_force"],
@@ -260,11 +257,11 @@ class TradingToolbox:
                 schema={
                     "type": "object",
                     "properties": {"symbol": {"type": "string"}},
-                "required": ["symbol"],
-                "additionalProperties": False,
-            },
-            handler=lambda args, agent=agent_key: self._tool_run_agent(agent, args or {}),
-        )
+                    "required": ["symbol"],
+                    "additionalProperties": False,
+                },
+                handler=lambda args, agent=agent_key: self._tool_run_agent(agent, args or {}),
+            )
         tools["finalize_decisions"] = ResponsesTool(
             name="finalize_decisions",
             description=(
@@ -296,10 +293,7 @@ class TradingToolbox:
                                         "type": "object",
                                         "properties": {
                                             "action": {"type": "string"},
-                                            "status": {
-                                                "type": "string",
-                                                "enum": ["done", "in_progress", "skipped"],
-                                            },
+                                            "status": {"type": "string", "enum": ["done", "in_progress", "skipped"]},
                                         },
                                         "required": ["action", "status"],
                                         "additionalProperties": False,
@@ -314,15 +308,8 @@ class TradingToolbox:
                                         "quantity": {"type": "number"},
                                         "notional": {"type": "number"},
                                         "reference_price": {"type": "number"},
-                                        "time_in_force": {
-                                            "type": "string",
-                                            "enum": ["DAY", "GTC", "FOK", "IOC", "OPG", "CLS"],
-                                        },
-                                        "order_type": {
-                                            "type": "string",
-                                            "enum": ["market", "limit", "stop", "stop_limit"],
-                                            "default": "market",
-                                        },
+                                        "time_in_force": {"type": "string", "enum": ["DAY", "GTC", "FOK", "IOC", "OPG", "CLS"]},
+                                        "order_type": {"type": "string", "enum": ["market", "limit", "stop", "stop_limit"], "default": "market"},
                                         "limit_price": {"type": "number"},
                                         "stop_price": {"type": "number"},
                                     },
@@ -341,6 +328,165 @@ class TradingToolbox:
             handler=self._tool_finalize_decisions,
         )
         return tools
+
+    def _determine_focus_tickers(self) -> List[str]:
+        universe_raw = self.config.get("portfolio_orchestrator", {}).get("universe", "")
+        universe = [sym.strip().upper() for sym in universe_raw.split(",") if sym.strip()]
+        holdings = self.snapshot.position_symbols()
+        combined: List[str] = []
+        for symbol in list(dict.fromkeys(universe + holdings)):
+            if symbol:
+                combined.append(symbol)
+        return combined or ["SPY"]
+
+    def _tool_fetch_market_data(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str(args.get("symbol") or "").upper()
+        lookback_days = int(args.get("lookback_days") or 7)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=max(lookback_days, 1))
+        payload = route_to_vendor("get_stock_data", symbol, start_date.isoformat(), end_date.isoformat())
+        return {"symbol": symbol, "start": start_date.isoformat(), "end": end_date.isoformat(), "data": payload}
+
+    def _tool_fetch_company_news(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str(args.get("symbol") or "").upper()
+        lookback_days = int(args.get("lookback_days") or 7)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=max(lookback_days, 1))
+        payload = route_to_vendor("get_news", symbol, start_date.isoformat(), end_date.isoformat())
+        return {"symbol": symbol, "start": start_date.isoformat(), "end": end_date.isoformat(), "data": payload}
+
+    def _tool_fetch_global_news(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        lookback_days = int(args.get("lookback_days") or 3)
+        limit = int(args.get("limit") or 5)
+        payload = route_to_vendor("get_global_news", date.today().isoformat(), lookback_days, limit)
+        return {"lookback_days": lookback_days, "limit": limit, "data": payload}
+
+    def _tool_fetch_indicators(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str(args.get("symbol") or "").upper()
+        lookback_days = int(args.get("lookback_days") or 30)
+        indicators = args.get("indicators") or ["rsi", "close_50_sma", "close_200_sma"]
+        end_date = date.today().isoformat()
+        payloads: Dict[str, Any] = {}
+        for indicator_name in indicators:
+            try:
+                payloads[indicator_name] = route_to_vendor("get_indicators", symbol, indicator_name, end_date, lookback_days)
+            except Exception as exc:
+                payloads[indicator_name] = {"error": str(exc)}
+        return {"symbol": symbol, "indicators": indicators, "as_of": end_date, "lookback_days": lookback_days, "data": payloads}
+
+    def _tool_submit_trade(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str(args.get("symbol") or "").upper()
+        action = str(args.get("action") or "").upper()
+        quantity = args.get("quantity")
+        notional = args.get("notional")
+        reference_price = args.get("reference_price")
+        time_in_force = str(args.get("time_in_force") or "").upper()
+        order_type = str(args.get("order_type") or "market").lower()
+        limit_price = args.get("limit_price")
+        stop_price = args.get("stop_price")
+        if action not in {"BUY", "SELL"}:
+            return {"status": "error", "reason": f"invalid_action:{action or '<empty>'}"}
+        if quantity in (None, "") and notional in (None, ""):
+            return {"status": "error", "reason": "missing_quantity_or_notional"}
+        if notional not in (None, "") and reference_price in (None, ""):
+            return {"status": "error", "reason": "missing_reference_price_for_notional"}
+        if not time_in_force:
+            return {"status": "error", "reason": "missing_time_in_force"}
+        if time_in_force not in self._ALLOWED_TIFS:
+            return {"status": "error", "reason": f"invalid_time_in_force:{time_in_force}"}
+        status = self.graph.check_market_status()
+        market_open = bool(status.get("is_open", True))
+        if not market_open:
+            return {"status": "market_closed", "clock": status.get("clock_text")}
+        result = self.graph.execute_trade_directive(
+            symbol,
+            action,
+            quantity=quantity,
+            notional=notional,
+            reference_price=reference_price,
+            time_in_force=time_in_force,
+            order_type=order_type,
+            limit_price=limit_price,
+            stop_price=stop_price,
+        )
+        return {"status": result.get("status"), "response": result}
+
+    def _tool_finalize_decisions(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._decision_validator.validate(args or {})
+        except ValidationError as exc:
+            return {"status": "error", "reason": str(exc)}
+
+    def _call_vendor(self, method: str, *args) -> Any:
+        try:
+            return route_to_vendor(method, *args)
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning("Vendor call %s failed: %s", method, exc)
+            return {"error": str(exc)}
+
+    def _tool_get_memory(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.memory_store:
+            return {"entries": []}
+        symbol = str(args.get("symbol") or "").upper()
+        limit = int(args.get("limit") or self.memory_store.max_entries)
+        entries = self.memory_store.load_structured(symbol, limit)
+        return {"symbol": symbol, "schema_version": self._MEMORY_SCHEMA_VERSION, "entries": entries}
+
+    def _init_agent_runners(self) -> Dict[str, Any]:
+        try:
+            market = create_market_analyst(self.graph.quick_thinking_llm)
+            news = create_news_analyst(self.graph.quick_thinking_llm)
+            fundamentals = create_fundamentals_analyst(self.graph.quick_thinking_llm)
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning("Failed to initialize analyst agents: %s", exc)
+            return {}
+        return {"market": market, "news": news, "fundamentals": fundamentals}
+
+    def _tool_run_agent(self, agent_key: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        symbol = str(args.get("symbol") or "").upper()
+        if not symbol:
+            return {"error": "Missing symbol"}
+        report = self._run_agent(agent_key, symbol)
+        return {"symbol": symbol, "agent": agent_key, "report": report}
+
+    def _run_agent(self, agent_key: str, symbol: str) -> str:
+        runner = (self._agent_runners or {}).get(agent_key)
+        if not runner:
+            return f"{agent_key} analyst unavailable."
+        state = self._build_agent_state(agent_key, symbol)
+        try:
+            result = runner(state)
+        except Exception as exc:
+            if self.logger:
+                self.logger.warning("Analyst %s failed for %s: %s", agent_key, symbol, exc)
+            return f"{agent_key} analyst failed: {exc}"
+        try:
+            if isinstance(result, dict) and "messages" in result:
+                messages = result.get("messages") or []
+                if messages:
+                    try:
+                        report = messages[-1].content
+                    except Exception:
+                        report = str(messages[-1])
+            else:
+                report = str(result)
+        except Exception:
+            report = str(result)
+        return report or f"{agent_key} analyst produced no narrative."
+
+    def _build_agent_state(self, agent_key: str, symbol: str) -> Dict[str, Any]:
+        today = date.today().isoformat()
+        return {
+            "messages": [HumanMessage(content=f"Provide {agent_key} analysis for {symbol} on {today}.")],
+            "company_of_interest": symbol,
+            "target_ticker": symbol,
+            "trade_date": today,
+            "scheduled_analysts": [agent_key],
+            "scheduled_analysts_plan": [agent_key],
+            "orchestrator_action": "execute",
+        }
 
 
 class TradeBlock(BaseModel):
