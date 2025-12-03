@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta, datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import logging
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator, validator
 
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
