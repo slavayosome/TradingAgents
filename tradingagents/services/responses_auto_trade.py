@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta, datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import logging
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from langchain_core.messages import HumanMessage
 from openai import OpenAI
@@ -104,6 +105,7 @@ class TradingToolbox:
             (self.config.get("auto_trade", {}) or {}).get("responses_enable_trade_tool")
         )
         self._tools = self._build_tools()
+        self._decision_validator = FinalDecisionValidator()
 
     @property
     def specs(self) -> List[Dict[str, Any]]:
@@ -258,12 +260,142 @@ class TradingToolbox:
                 schema={
                     "type": "object",
                     "properties": {"symbol": {"type": "string"}},
-                    "required": ["symbol"],
-                    "additionalProperties": False,
+                "required": ["symbol"],
+                "additionalProperties": False,
+            },
+            handler=lambda args, agent=agent_key: self._tool_run_agent(agent, args or {}),
+        )
+        tools["finalize_decisions"] = ResponsesTool(
+            name="finalize_decisions",
+            description=(
+                "Finalize per-ticker decisions in a strict schema after all plan steps are resolved. "
+                "Actions must be one of BUY, SELL, HOLD. For BUY/SELL, you MUST supply quantity or notional (with reference_price) "
+                "and a time_in_force from {DAY, GTC, FOK, IOC, OPG, CLS}. No other action labels are accepted."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "decisions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "ticker": {"type": "string"},
+                                "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                                "priority": {"type": ["number", "string"]},
+                                "notes": {"type": "string"},
+                                "next_decision": {"type": "string"},
+                                "plan_actions": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "default": [],
+                                },
+                                "plan_status": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "action": {"type": "string"},
+                                            "status": {
+                                                "type": "string",
+                                                "enum": ["done", "in_progress", "skipped"],
+                                            },
+                                        },
+                                        "required": ["action", "status"],
+                                        "additionalProperties": False,
+                                    },
+                                    "default": [],
+                                },
+                                "strategy": {"type": "object"},
+                                "trade": {
+                                    "type": "object",
+                                    "properties": {
+                                        "side": {"type": "string", "enum": ["BUY", "SELL"]},
+                                        "quantity": {"type": "number"},
+                                        "notional": {"type": "number"},
+                                        "reference_price": {"type": "number"},
+                                        "time_in_force": {
+                                            "type": "string",
+                                            "enum": ["DAY", "GTC", "FOK", "IOC", "OPG", "CLS"],
+                                        },
+                                        "order_type": {
+                                            "type": "string",
+                                            "enum": ["market", "limit", "stop", "stop_limit"],
+                                            "default": "market",
+                                        },
+                                        "limit_price": {"type": "number"},
+                                        "stop_price": {"type": "number"},
+                                    },
+                                    "required": ["side", "time_in_force"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "required": ["ticker", "action", "priority", "strategy"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
-                handler=lambda args, agent=agent_key: self._tool_run_agent(agent, args or {}),
-            )
+                "required": ["decisions"],
+                "additionalProperties": False,
+            },
+            handler=self._tool_finalize_decisions,
+        )
         return tools
+
+
+class TradeBlock(BaseModel):
+    side: str = Field(..., pattern="^(BUY|SELL)$")
+    quantity: Optional[float] = None
+    notional: Optional[float] = None
+    reference_price: Optional[float] = None
+    time_in_force: str = Field(..., pattern="^(DAY|GTC|FOK|IOC|OPG|CLS)$")
+    order_type: str = Field("market", pattern="^(market|limit|stop|stop_limit)$")
+    limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_sizing(self) -> "TradeBlock":  # noqa: N805
+        if self.quantity in (None, "") and self.notional in (None, ""):
+            raise ValueError("Provide quantity or notional")
+        if self.notional is not None and self.reference_price in (None, ""):
+            raise ValueError("Provide reference_price with notional")
+        return self
+
+
+class DecisionEntry(BaseModel):
+    ticker: str
+    action: str = Field(..., pattern="^(BUY|SELL|HOLD)$")
+    priority: float
+    notes: str = ""
+    next_decision: Optional[str] = None
+    plan_actions: List[str] = Field(default_factory=list)
+    plan_status: List[Dict[str, str]] = Field(default_factory=list)
+    strategy: Dict[str, Any]
+    trade: Optional[TradeBlock] = None
+
+    @validator("ticker")
+    def upper_ticker(cls, v: str) -> str:  # noqa: N805
+        return (v or "").upper()
+
+    @validator("action")
+    def upper_action(cls, v: str) -> str:  # noqa: N805
+        return (v or "").upper()
+
+    @validator("priority")
+    def priority_to_float(cls, v: Any) -> float:  # noqa: N805
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            text = str(v or "").strip().lower()
+            mapping = {"low": 0.25, "medium": 0.5, "med": 0.5, "high": 0.8}
+            return mapping.get(text, 0.0)
+
+
+class FinalDecisionValidator:
+    def validate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        decisions_raw = payload.get("decisions") or []
+        validated = [DecisionEntry(**item).dict() for item in decisions_raw]
+        return {"decisions": validated}
 
     def _determine_focus_tickers(self) -> List[str]:
         universe_raw = self.config.get("portfolio_orchestrator", {}).get("universe", "")
@@ -361,6 +493,12 @@ class TradingToolbox:
             time_in_force=time_in_force,
         )
         return {"status": result.get("status"), "response": result}
+
+    def _tool_finalize_decisions(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._decision_validator.validate(args or {})
+        except ValidationError as exc:
+            return {"status": "error", "reason": str(exc)}
 
     def _call_vendor(self, method: str, *args) -> Any:
         try:
@@ -792,6 +930,8 @@ class ResponsesAutoTradeService:
                     tool_error: Optional[str] = None
                     try:
                         result = toolbox.invoke(name, args)
+                        if name == "finalize_decisions":
+                            request_meta["final_decisions"] = result
                     except Exception as exc:  # pragma: no cover - defensive
                         tool_error = f"{exc}"
                         result = {"error": tool_error}
