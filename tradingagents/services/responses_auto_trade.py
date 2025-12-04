@@ -101,9 +101,9 @@ class TradingToolbox:
         self.logger = logger or logging.getLogger(__name__)
         self.memory_store = memory_store
         self._agent_runners = self._init_agent_runners()
-        self._trade_tool_enabled = bool(
-            (self.config.get("auto_trade", {}) or {}).get("responses_enable_trade_tool")
-        )
+        auto_cfg = (self.config.get("auto_trade", {}) or {})
+        exec_enabled = bool(self.config.get("trade_execution", {}).get("enabled", False))
+        self._trade_tool_enabled = bool(auto_cfg.get("responses_enable_trade_tool", exec_enabled))
         self._tools = self._build_tools()
         self._decision_validator = FinalDecisionValidator()
         self._MEMORY_SCHEMA_VERSION = getattr(ResponsesAutoTradeService, "_MEMORY_SCHEMA_VERSION", "v1")
